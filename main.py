@@ -1,3 +1,12 @@
+import json
+import os
+
+file_exists = os.path.exists('information_save_file')
+if file_exists:
+    with open('information_save_file', 'r') as f:
+else :
+    with open('information_save_file', 'w') as f:
+        # initialize information
 print("Hello and this is the start of my finance tracker")
 run = True
 total_transactions = []
