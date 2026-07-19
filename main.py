@@ -1,6 +1,7 @@
 import json
 import os
 import datetime
+from collections import defaultdict
 
 print("Hello and welcome to my finance tracker")
 run = True
@@ -28,9 +29,15 @@ while run :
         total_transactions.append(current_transaction)
     elif action.lower() == "p" :
         total_spent = 0
+        section_transactions = defaultdict(float)
         for item in total_transactions:
+            section_transactions[item.get("type")] += item.get("price")
             total_spent += item.get("price")
-        print(total_spent)
+        print("This is the total you have spent: " + str(total_spent))
+        print("These are the individual categories of spending: ")
+        for category in section_transactions: 
+            print(category + ": " + str(section_transactions[category]))
+
     elif action.lower() == "s" :
         with open('information_save_file', 'w') as f:
             for transaction in total_transactions: 
