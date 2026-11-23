@@ -1,18 +1,26 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api, type Settings as SettingsData } from "./api";
+import { TransactionForm } from "./components/forms";
+import { Sheet } from "./components/Sheet";
 import { applyTheme, useAsync, type ThemeChoice } from "./hooks";
+import { TabIcons } from "./icons";
 import { Dashboard } from "./pages/Dashboard";
 import { Holdings } from "./pages/Holdings";
 import { Settings } from "./pages/Settings";
 import { Transactions } from "./pages/Transactions";
 
 type Page = "dashboard" | "transactions" | "holdings" | "settings";
-const PAGES: { id: Page; label: string }[] = [
-  { id: "dashboard", label: "Dashboard" },
-  { id: "transactions", label: "Transactions" },
-  { id: "holdings", label: "Holdings" },
-  { id: "settings", label: "Settings" },
+const PAGES: { id: Page; label: string; short: string }[] = [
+  { id: "dashboard", label: "Dashboard", short: "Home" },
+  { id: "transactions", label: "Transactions", short: "Activity" },
+  { id: "holdings", label: "Holdings", short: "Net worth" },
+  { id: "settings", label: "Settings", short: "Settings" },
 ];
+
+function greeting(): string {
+  const hour = new Date().getHours();
+  return hour < 5 ? "Good evening" : hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+}
 
 // The page lives in the URL hash (#/holdings), so refreshing or bookmarking
 // keeps your place without needing a router library.
@@ -28,6 +36,7 @@ export default function App() {
   // lists it as a dependency, so all of them reload their data together.
   const [version, setVersion] = useState(0);
   const onChanged = () => setVersion((v) => v + 1);
+  const [adding, setAdding] = useState(false);
 
   const profile = useAsync(api.profile, [profileVersion]);
 
@@ -85,9 +94,15 @@ export default function App() {
             </a>
           ))}
         </nav>
-        <span className="greeting">Hi, {profile.data.name}</span>
+        <button className="btn btn-primary add-button" type="button" onClick={() => setAdding(true)}>
+          {TabIcons.plus}
+          <span>Add</span>
+        </button>
       </header>
       <main>
+        {page === "dashboard" && (
+          <h1 className="page-title">{greeting()}, {profile.data.name}</h1>
+        )}
         {page === "dashboard" && <Dashboard version={version} onChanged={onChanged} />}
         {page === "transactions" && <Transactions version={version} onChanged={onChanged} />}
         {page === "holdings" && <Holdings version={version} onChanged={onChanged} />}
@@ -102,6 +117,28 @@ export default function App() {
           />
         )}
       </main>
+
+      {/* Phones: an iOS-style tab bar replaces the top navigation. */}
+      <nav className="tabbar" aria-label="Main">
+        {PAGES.map((p) => (
+          <a key={p.id} href={`#/${p.id}`} className={page === p.id ? "active" : undefined} aria-current={page === p.id ? "page" : undefined}>
+            {TabIcons[p.id]}
+            <span>{p.short}</span>
+          </a>
+        ))}
+      </nav>
+
+      {adding && (
+        <Sheet title="Add a transaction" onClose={() => setAdding(false)}>
+          <TransactionForm
+            version={version}
+            onSaved={() => {
+              setAdding(false);
+              onChanged();
+            }}
+          />
+        </Sheet>
+      )}
     </div>
   );
 }

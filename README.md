@@ -32,6 +32,28 @@ computer can connect, so your data isn't exposed to your network.
 To browse the API itself, open http://127.0.0.1:8000/docs. It's an interactive page
 that FastAPI generates from the code.
 
+### On your phone
+
+The app runs on your Mac, and your phone opens it over Tailscale, so it isn't on
+the public internet and only your own devices can reach it.
+
+1. In the Tailscale admin console, under **DNS**, turn on **HTTPS
+   Certificates**. This is a one-time setting.
+2. On the Mac, while the app is running:
+   ```bash
+   /Applications/Tailscale.app/Contents/MacOS/Tailscale serve --bg 8000
+   ```
+   This gives the app a private HTTPS address,
+   `https://<your-mac>.<tailnet>.ts.net`, that only your Tailscale devices can
+   open. Undo it with `tailscale serve reset`.
+3. On the phone, with Tailscale on, open that address. Then use **Add to Home
+   screen** (on Android, Chrome's ⋮ menu → *Install app*; on iPhone, Safari's
+   Share → *Add to Home Screen*). It opens full-screen with its own icon and a
+   bottom tab bar, like an app.
+
+The Mac has to be awake with the app running. An always-on Raspberry Pi would
+remove that requirement.
+
 ### Working on the frontend
 
 `npm run build` makes a finished copy of the site that the Python server serves.
@@ -125,6 +147,7 @@ legacy/main_v1.py           the original single-file version
 | POST | `/api/import` | import a CSV's new transactions |
 | GET | `/api/reports/categories?month=` | spending per category |
 | GET | `/api/reports/monthly` | last 12 months with how unusual each was |
+| GET | `/api/reports/pace?month=` | running total through a month vs. the month before |
 | GET / POST | `/api/holdings` | list / add |
 | PATCH / DELETE | `/api/holdings/{id}` | change name, symbol, quantity, or value / remove |
 | GET | `/api/quotes/{symbol}` | live price (used to check tickers) |
@@ -255,10 +278,19 @@ paused. Stopping a rule keeps the transactions it already created.
 - **Prices are cached for 15 minutes.** When offline, the app uses the last known
   price and labels it as stale. A net-worth snapshot is only recorded when every
   holding could be priced.
-- **Apple-style design:** system grays with grouped white cards (true black in
-  dark mode), Apple blue, filled input fields, a frosted top bar, segmented
-  controls, and rounded rectangles instead of pill shapes. Every color is a CSS
-  variable in `styles.css`.
+- **Design:** an Apple-style base with a layout modeled on Rocket Money.
+  - Apple-style base: system grays with grouped white cards (true black in dark
+    mode), Apple blue, filled input fields, a frosted top bar, segmented
+    controls, and rounded rectangles instead of pill shapes.
+  - Home screen: spending this month and how it compares with the same point
+    last month, a running-total chart against last month, net worth, upcoming
+    bills, and recent activity.
+  - Every category has an icon chosen by keyword, shown on a tinted tile.
+    Transactions are grouped by day and can be searched.
+  - On phones, an iOS-style tab bar replaces the top navigation, and **+ Add**
+    opens a sheet.
+  - Every color is a CSS variable in `styles.css`. The app icon is drawn by
+    `frontend/scripts/make_icons.py`.
 - **Editing:** click any transaction or holding to edit it in a sheet, which
   also holds Delete or Remove. When you change a transaction's category, the
   sheet offers to move every other transaction with the same description, which

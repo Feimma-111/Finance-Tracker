@@ -14,7 +14,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { CategoryReport, MonthRow, NetWorth, Snapshot } from "../api";
+import type { CategoryReport, MonthRow, NetWorth, Pace, Snapshot } from "../api";
+import { CategoryIcon } from "../icons";
 import { assetMeta, dateLabel, dateShort, money, moneyAxis, monthLabel, monthShort, percent, seriesVar } from "../format";
 import { useChartTheme } from "../hooks";
 
@@ -199,6 +200,72 @@ export function NetWorthChart({ history }: { history: Snapshot[] }) {
   );
 }
 
+/* ------------------------------------------------------------------ spending pace (Rocket Money's "current spend")
+   Running total through the month (blue) against the same days of last month
+   (gray). Two series, so there's always a legend; the lines differ in color
+   and in weight, so they don't rely on color alone. */
+
+export function PaceChart({ pace }: { pace: Pace }) {
+  const t = useChartTheme();
+  const thisLabel = monthShort(pace.month);
+  const lastLabel = monthShort(pace.previous_month);
+  const days = Math.max(pace.days_in_month, pace.last_month.length);
+  const data = Array.from({ length: days }, (_, i) => ({
+    day: i + 1,
+    current: pace.this_month[i]?.cumulative_cents,
+    previous: pace.last_month[i]?.cumulative_cents,
+  }));
+  if (!pace.this_month.length && !pace.last_month.length) return <p className="chart-note">No spending yet.</p>;
+
+  return (
+    <div className="chart">
+      <div className="series-legend" aria-hidden="true">
+        <span><i style={{ background: t.series1 }} />{thisLabel}</span>
+        <span><i style={{ background: t.muted }} />{lastLabel}</span>
+      </div>
+      <ResponsiveContainer width="100%" height={190}>
+        <LineChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
+          <CartesianGrid vertical={false} stroke={t.grid} />
+          <XAxis
+            dataKey="day"
+            tickLine={false}
+            axisLine={{ stroke: t.axis }}
+            tick={axisTick(t.muted)}
+            ticks={[1, 8, 15, 22, days]}
+          />
+          <YAxis tickFormatter={moneyAxis} tickLine={false} axisLine={false} tick={axisTick(t.muted)} width={58} />
+          <Tooltip
+            cursor={{ stroke: t.axis, strokeWidth: 1 }}
+            content={({ active, payload }) => {
+              const p = active && (payload?.[0]?.payload as (typeof data)[number] | undefined);
+              if (!p) return null;
+              return (
+                <div className="chart-tooltip">
+                  <strong>Day {p.day}</strong>
+                  {p.current !== undefined && <span className="subtle">{thisLabel}: {money(p.current)}</span>}
+                  {p.previous !== undefined && <span className="subtle">{lastLabel}: {money(p.previous)}</span>}
+                </div>
+              );
+            }}
+          />
+          <Line type="monotone" dataKey="previous" stroke={t.muted} strokeWidth={1.5} dot={false}
+            isAnimationActive={false} connectNulls />
+          <Line type="monotone" dataKey="current" stroke={t.series1} strokeWidth={2.5} isAnimationActive={false}
+            activeDot={{ r: 5, stroke: t.surface, strokeWidth: 2, fill: t.series1 }}
+            dot={(props: { cx?: number; cy?: number; index?: number }) =>
+              props.index === pace.this_month.length - 1 && props.cx !== undefined && props.cy !== undefined ? (
+                <circle key="end" cx={props.cx} cy={props.cy} r={4.5} fill={t.series1} stroke={t.surface} strokeWidth={2} />
+              ) : (
+                <g key={props.index} />
+              )
+            }
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ spending by category
    Ranked bars instead of a pie: lengths are much easier to compare than
    slice angles, and every bar carries its own value and share. */
@@ -224,7 +291,10 @@ export function CategoryBars({ report }: { report: CategoryReport }) {
     <ol className="rank-bars" aria-label="Spending by category">
       {items.map((item) => (
         <li key={item.category} title={`${item.category}: ${money(item.total_cents)} (${percent(item.share)})`}>
-          <span className="label">{item.category}</span>
+          <span className="label">
+            <CategoryIcon category={item.category} size={28} />
+            <span>{item.category}</span>
+          </span>
           <span className="track" aria-hidden="true">
             <span className="fill" style={{ width: `${(item.total_cents / largest) * 100}%` }} />
           </span>

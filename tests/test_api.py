@@ -133,6 +133,34 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(self.client.get("/api/summary", params={"month": "nope"}).status_code, 400)
 
+    def test_spending_pace(self):
+        self.add_tx(amount="100", occurred_on="2026-10-02")
+        self.add_tx(amount="50", occurred_on="2026-10-20")
+        self.add_tx(amount="1450", category="Rent", occurred_on="2026-11-01")
+        self.add_tx(amount="30", occurred_on="2026-11-05")
+        self.add_tx(amount="20", occurred_on="2026-11-05")
+        self.add_tx(description="Pay", amount="999", category="Salary", kind="income", occurred_on="2026-11-06")
+
+        pace = self.client.get("/api/reports/pace").json()  # Nov 22, in progress
+        self.assertEqual((pace["month"], pace["through_day"], pace["in_progress"]), ("2026-11", 22, True))
+        self.assertEqual(len(pace["this_month"]), 22)
+        self.assertEqual(pace["this_month"][4], {"day": 5, "cumulative_cents": 150000})  # 1450 + 30 + 20
+        self.assertEqual(len(pace["last_month"]), 31)
+        self.assertEqual(pace["last_month_same_point_cents"], 15000)  # Oct 1-22: $100 + $50
+        self.assertEqual(pace["difference_cents"], 150000 - 15000)
+        self.assertFalse(pace["controlled"])
+
+        # Mark rent as covered: it drops out of the running total.
+        self.client.put("/api/settings", json={"covered_categories": ["Rent"]})
+        controlled = self.client.get("/api/reports/pace").json()
+        self.assertTrue(controlled["controlled"])
+        self.assertEqual(controlled["spent_cents"], 5000)
+        everything = self.client.get("/api/reports/pace", params={"controlled": "false"}).json()
+        self.assertEqual(everything["spent_cents"], 150000)
+
+        october = self.client.get("/api/reports/pace", params={"month": "2026-10"}).json()
+        self.assertEqual((october["through_day"], october["spent_cents"], october["in_progress"]), (31, 15000, False))
+
     def test_csv_export(self):
         self.add_tx()
         response = self.client.get("/api/transactions.csv")

@@ -134,6 +134,22 @@ export interface MonthlyReport {
   months: MonthRow[];
 }
 
+export interface Pace {
+  month: string;
+  previous_month: string;
+  days_in_month: number;
+  through_day: number; // last day included (today, for the current month)
+  in_progress: boolean;
+  controlled: boolean; // covered categories left out
+  covered_categories: string[];
+  this_month: { day: number; cumulative_cents: number }[];
+  last_month: { day: number; cumulative_cents: number }[];
+  spent_cents: number;
+  last_month_same_point_cents: number;
+  last_month_total_cents: number;
+  difference_cents: number;
+}
+
 export interface Holding {
   id: number;
   asset_type: AssetType;
@@ -274,6 +290,7 @@ export const api = {
 
   categoryReport: (month?: string | null) => request<CategoryReport>(`/api/reports/categories${query({ month })}`),
   monthlyReport: () => request<MonthlyReport>("/api/reports/monthly"),
+  pace: (month: string) => request<Pace>(`/api/reports/pace${query({ month })}`),
 
   holdings: () => request<Holding[]>("/api/holdings"),
   addHolding: (body: NewHolding) => request<Holding>("/api/holdings", json("POST", body)),

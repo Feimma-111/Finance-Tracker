@@ -1,18 +1,24 @@
 import { useState } from "react";
-import { api, type CategoryReport } from "../api";
+import { api, type CategoryReport, type Pace } from "../api";
 import { AiReview } from "../components/AiReview";
-import { Allocation, CategoryBars, CategoryDonut, MonthlyChart, NetWorthChart } from "../components/charts";
-import { TransactionForm } from "../components/forms";
-import { TransactionTable } from "../components/TransactionTable";
+import { Allocation, CategoryBars, CategoryDonut, MonthlyChart, NetWorthChart, PaceChart } from "../components/charts";
+import { TransactionList } from "../components/TransactionList";
+import { Upcoming } from "../components/Upcoming";
 import { currentMonth, dateLabel, money, monthLabel, signedMoney } from "../format";
 import { useAsync } from "../hooks";
 
+/**
+ * Home screen, laid out like Rocket Money: this month's spending and how it's
+ * pacing against last month first, then net worth and upcoming bills, the AI
+ * analyst, where the money went, and recent transactions.
+ */
 export function Dashboard({ version, onChanged }: { version: number; onChanged: () => void }) {
   const [month, setMonth] = useState(currentMonth());
 
   const worth = useAsync(async () => ({ worth: await api.netWorth(), history: await api.netWorthHistory() }), [version]);
   const months = useAsync(api.months, [version]);
   const summary = useAsync(() => api.summary(month), [month, version]);
+  const pace = useAsync(() => api.pace(month), [month, version]);
   const categories = useAsync(() => api.categoryReport(month), [month, version]);
   const monthly = useAsync(api.monthlyReport, [version]);
   const recent = useAsync(() => api.transactions(), [version]);
@@ -23,49 +29,14 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
   const [chart, setChart] = useState<"pie" | "bars">(() => remembered("category-chart", "pie") as "pie" | "bars");
   const [hideCovered, setHideCovered] = useState(() => remembered("hide-covered", "no") === "yes");
   const covered = settings.data?.covered_categories ?? [];
-  const coveredLabel = "Covered";
 
   const monthOptions = months.data ?? [month];
 
   return (
     <>
-      {/* Net worth isn't tied to a month, so it sits above the month filter. */}
-      <section className={`card ${worth.loading && worth.data ? "refreshing" : ""}`}>
-        <div className="networth-layout">
-          <div>
-            <div className="eyebrow">Net worth</div>
-            {worth.error && <p className="message error">{worth.error}</p>}
-            {worth.data && (
-              <>
-                <div className="hero">{money(worth.data.worth.total_cents)}</div>
-                <NetWorthDelta change={worth.data.worth.change_cents} since={worth.data.worth.change_since} />
-                {!worth.data.worth.complete && (
-                  <p className="message error">Some holdings couldn't be priced, so this total is incomplete.</p>
-                )}
-                {worth.data.worth.lines.length ? (
-                  <div style={{ marginTop: 18 }}>
-                    <Allocation worth={worth.data.worth} />
-                  </div>
-                ) : (
-                  <p className="hint">
-                    Add your cash, stocks, crypto, or gold on the <a href="#/holdings">Holdings</a> page to track this.
-                  </p>
-                )}
-              </>
-            )}
-            {!worth.data && !worth.error && <div className="hero subtle">…</div>}
-          </div>
-          <div>
-            <div className="eyebrow" style={{ marginBottom: 8 }}>Over time</div>
-            {worth.data && <NetWorthChart history={worth.data.history} />}
-          </div>
-        </div>
-      </section>
-
-      {/* One filter row; everything below it follows the chosen month. */}
-      <div className="filter-row">
-        <label htmlFor="month-filter">Showing</label>
-        <select id="month-filter" value={month} onChange={(e) => setMonth(e.target.value)}>
+      {/* One filter row; everything on the page except net worth follows the chosen month. */}
+      <div className="filter-row page-filter">
+        <select id="month-filter" aria-label="Month" value={month} onChange={(e) => setMonth(e.target.value)} className="month-select">
           {monthOptions.map((m) => (
             <option key={m} value={m}>{monthLabel(m)}</option>
           ))}
@@ -75,14 +46,59 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
         )}
       </div>
 
-      <section className={`grid grid-3 ${summary.loading && summary.data ? "refreshing" : ""}`}>
-        <StatTile label="Spent" value={summary.data?.spent_cents} />
-        <StatTile label="Income" value={summary.data?.income_cents} />
-        <StatTile
-          label="Net"
-          value={summary.data?.net_cents}
-          note={summary.data ? (summary.data.net_cents >= 0 ? "You saved money" : "You spent more than you earned") : undefined}
-        />
+      <section className="grid grid-3">
+        <div className={`card span-2 ${pace.loading && pace.data ? "refreshing" : ""}`}>
+          {pace.error && <p className="message error">{pace.error}</p>}
+          {pace.data ? <SpendHero pace={pace.data} /> : !pace.error && <div className="hero subtle">…</div>}
+        </div>
+        <div className={`stack stat-stack ${summary.loading && summary.data ? "refreshing" : ""}`}>
+          <StatTile label="Income" value={summary.data?.income_cents} />
+          <StatTile
+            label="Net"
+            value={summary.data?.net_cents}
+            note={summary.data ? (summary.data.net_cents >= 0 ? "You saved money" : "You spent more than you earned") : undefined}
+          />
+          <StatTile label="Total spent" value={summary.data?.spent_cents} note={covered.length ? "Including covered costs" : undefined} />
+        </div>
+      </section>
+
+      <section className="grid grid-3" style={{ marginTop: 16 }}>
+        <div className={`card span-2 ${worth.loading && worth.data ? "refreshing" : ""}`}>
+          <div className="networth-layout">
+            <div>
+              <div className="eyebrow">Net worth</div>
+              {worth.error && <p className="message error">{worth.error}</p>}
+              {worth.data && (
+                <>
+                  <div className="hero">{money(worth.data.worth.total_cents)}</div>
+                  <NetWorthDelta change={worth.data.worth.change_cents} since={worth.data.worth.change_since} />
+                  {!worth.data.worth.complete && (
+                    <p className="message error">Some holdings couldn't be priced, so this total is incomplete.</p>
+                  )}
+                  {worth.data.worth.lines.length ? (
+                    <div style={{ marginTop: 16 }}>
+                      <Allocation worth={worth.data.worth} />
+                    </div>
+                  ) : (
+                    <p className="hint">
+                      Add your cash, stocks, crypto, or gold on the <a href="#/holdings">Holdings</a> page to track this.
+                    </p>
+                  )}
+                </>
+              )}
+              {!worth.data && !worth.error && <div className="hero subtle">…</div>}
+            </div>
+            <div>{worth.data && <NetWorthChart history={worth.data.history} />}</div>
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-head">
+            <h2 className="card-title">Upcoming</h2>
+            <span className="card-subtitle">Next 30 days</span>
+            <a className="card-action" href="#/transactions">Manage</a>
+          </div>
+          <Upcoming version={version} />
+        </div>
       </section>
 
       <section style={{ marginTop: 16 }}>
@@ -93,7 +109,6 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
         <div className={`card ${categories.loading && categories.data ? "refreshing" : ""}`}>
           <div className="card-head">
             <h2 className="card-title">Spending by category</h2>
-            <span className="card-subtitle">{monthLabel(month)}</span>
             <div className="card-action">
               <div className="segmented" role="group" aria-label="Chart type">
                 {(["pie", "bars"] as const).map((kind) => (
@@ -122,7 +137,7 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
                   remember("hide-covered", e.target.checked ? "yes" : "no");
                 }}
               />
-              Hide covered expenses ({covered.join(", ")}{settings.data?.covered_note ? ` · ${settings.data.covered_note}` : ""})
+              Hide covered expenses ({covered.join(", ")})
             </label>
           )}
           {categories.error && <p className="message error">{categories.error}</p>}
@@ -131,7 +146,7 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
               report={categories.data}
               colorOrder={allTime.data?.items.map((i) => i.category) ?? []}
               covered={covered}
-              coveredLabel={coveredLabel}
+              coveredLabel="Covered"
               hideCovered={hideCovered}
             />
           ) : (
@@ -141,7 +156,7 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
         <div className={`card ${monthly.loading && monthly.data ? "refreshing" : ""}`}>
           <div className="card-head">
             <h2 className="card-title">Monthly spending</h2>
-            <span className="card-subtitle">Click a month to see its categories</span>
+            <span className="card-subtitle">Click a month to see it</span>
           </div>
           {monthly.error && <p className="message error">{monthly.error}</p>}
           {monthly.data && (
@@ -155,22 +170,53 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
         </div>
       </section>
 
-      <section className="grid grid-2" style={{ marginTop: 16 }}>
-        <div className="card">
-          <div className="card-head">
-            <h2 className="card-title">Add a transaction</h2>
-          </div>
-          <TransactionForm onSaved={onChanged} version={version} />
+      <section className="card" style={{ marginTop: 16 }}>
+        <div className="card-head">
+          <h2 className="card-title">Recent transactions</h2>
+          <a className="card-action" href="#/transactions">See all</a>
         </div>
-        <div className="card">
-          <div className="card-head">
-            <h2 className="card-title">Recent transactions</h2>
-            <a className="card-action" href="#/transactions">See all</a>
-          </div>
-          {recent.data && <TransactionTable items={recent.data.items.slice(0, 7)} onChanged={onChanged} />}
-        </div>
+        {recent.data && <TransactionList items={recent.data.items.slice(0, 8)} onChanged={onChanged} />}
       </section>
     </>
+  );
+}
+
+/** "Spent in November" with how it's pacing against the same days last month. */
+function SpendHero({ pace }: { pace: Pace }) {
+  const label = pace.controlled ? "Spending you control" : "Spent";
+  const last = monthLabel(pace.previous_month).split(" ")[0];
+  const diff = pace.difference_cents;
+  let comparison;
+  if (!pace.through_day) {
+    comparison = <span className="subtle">This month hasn't started yet.</span>;
+  } else if (!pace.last_month_total_cents) {
+    comparison = <span className="subtle">Nothing recorded in {last} to compare with.</span>;
+  } else if (pace.in_progress) {
+    comparison = (
+      <span className={diff > 0 ? "delta-bad" : "delta-good"}>
+        {diff > 0 ? "▲" : "▼"} {money(Math.abs(diff))} {diff > 0 ? "more" : "less"} than this point in {last}
+      </span>
+    );
+  } else {
+    const full = pace.spent_cents - pace.last_month_total_cents;
+    comparison = (
+      <span className={full > 0 ? "delta-bad" : "delta-good"}>
+        {full > 0 ? "▲" : "▼"} {money(Math.abs(full))} {full > 0 ? "more" : "less"} than {last}
+      </span>
+    );
+  }
+  return (
+    <div className="spend-hero">
+      <div className="eyebrow">
+        {label} · {monthLabel(pace.month)}
+        {pace.controlled && (
+          <span className="subtle" title={`Leaves out ${pace.covered_categories.join(", ")}`}> (covered costs left out)</span>
+        )}
+      </div>
+      <div className="hero">{money(pace.spent_cents)}</div>
+      <div className="delta">{comparison}</div>
+      <PaceChart pace={pace} />
+    </div>
   );
 }
 
@@ -201,7 +247,7 @@ function remember(key: string, value: string): void {
 
 function StatTile({ label, value, note }: { label: string; value?: number; note?: string }) {
   return (
-    <div className="card">
+    <div className="card stat-tile">
       <div className="eyebrow">{label}</div>
       <div className="tile-value">{value === undefined ? "…" : money(value)}</div>
       {note && <div className="tile-note">{note}</div>}

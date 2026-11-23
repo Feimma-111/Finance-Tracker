@@ -16,7 +16,7 @@ import json
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from .models import (
     AssetType,
@@ -418,6 +418,22 @@ class Store:
             params.append(" ".join(category.split()))
         total, count = self.conn.execute(sql, params).fetchone()
         return total, count
+
+    def daily_totals(
+        self, kind: Kind, start: date, end: date, *, exclude_categories: Sequence[str] = ()
+    ) -> Dict[date, int]:
+        """{day: total_cents} for days with transactions between start and end."""
+        sql = """
+            SELECT t.occurred_on AS day, SUM(t.amount_cents) AS total
+            FROM transactions t JOIN categories c ON c.id = t.category_id
+            WHERE t.kind = ? AND t.occurred_on BETWEEN ? AND ?
+        """
+        params: list = [kind.value, start.isoformat(), end.isoformat()]
+        if exclude_categories:
+            sql += f" AND c.name NOT IN ({', '.join('?' * len(exclude_categories))})"
+            params += list(exclude_categories)
+        sql += " GROUP BY t.occurred_on"
+        return {date.fromisoformat(row["day"]): row["total"] for row in self.conn.execute(sql, params)}
 
     def category_totals_between(self, kind: Kind, start: date, end: date) -> List[Tuple[str, int]]:
         rows = self.conn.execute(

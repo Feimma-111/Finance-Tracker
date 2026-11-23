@@ -5,6 +5,7 @@ import { HoldingForm } from "../components/forms";
 import { Sheet } from "../components/Sheet";
 import { assetMeta, money, quantity, seriesVar } from "../format";
 import { useAsync } from "../hooks";
+import { AssetIcon } from "../icons";
 
 export function Holdings({ version, onChanged }: { version: number; onChanged: () => void }) {
   const worth = useAsync(api.netWorth, [version]);
@@ -95,8 +96,7 @@ function HoldingsTable({ lines, onChanged }: { lines: NetWorthLine[]; onChanged:
               >
                 <td>
                   <div className="holding-name">
-                    {/* On narrow screens the Type column is hidden; this dot keeps the type visible. */}
-                    <span className="swatch show-narrow" title={meta.label} style={{ background: seriesVar(meta.slot) }} />
+                    <AssetIcon type={line.asset_type} size={32} />
                     <div>
                       {line.name}
                       {line.symbol && line.symbol !== line.name && line.asset_type !== "gold" && (

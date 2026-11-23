@@ -1,63 +1,86 @@
 import { useState, type FormEvent, type KeyboardEvent } from "react";
 import { api, type Kind, type Transaction } from "../api";
-import { dateLabel, money, todayIso } from "../format";
+import { money, todayIso } from "../format";
 import { useAsync } from "../hooks";
+import { CategoryIcon } from "../icons";
 import { Sheet } from "./Sheet";
 
-/** Click (or press Enter on) a row to edit it; deleting lives in the edit sheet. */
-export function TransactionTable({ items, onChanged }: { items: Transaction[]; onChanged: () => void }) {
+/**
+ * Transactions grouped under day headings ("Today", "Yesterday", "Tue, Nov 18"),
+ * each with its category icon. Click (or press Enter on) a row to edit it.
+ */
+export function TransactionList({
+  items,
+  onChanged,
+  emptyText = "No transactions yet.",
+}: {
+  items: Transaction[];
+  onChanged: () => void;
+  emptyText?: string;
+}) {
   const [editing, setEditing] = useState<Transaction | null>(null);
 
-  if (!items.length) return <p className="empty">No transactions yet.</p>;
+  if (!items.length) return <p className="empty">{emptyText}</p>;
 
-  const open = (tx: Transaction) => setEditing(tx);
+  // Items arrive newest first; group consecutive ones by date.
+  const groups: { day: string; items: Transaction[]; net: number }[] = [];
+  for (const tx of items) {
+    const last = groups[groups.length - 1];
+    const signed = tx.kind === "income" ? tx.amount_cents : -tx.amount_cents;
+    if (last && last.day === tx.occurred_on) {
+      last.items.push(tx);
+      last.net += signed;
+    } else {
+      groups.push({ day: tx.occurred_on, items: [tx], net: signed });
+    }
+  }
+
   const onKey = (event: KeyboardEvent, tx: Transaction) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      open(tx);
+      setEditing(tx);
     }
   };
 
   return (
-    <div className="table-wrap">
-      <table className="clickable-rows">
-        <thead>
-          <tr>
-            <th className="hide-narrow">Date</th>
-            <th>Description</th>
-            <th className="hide-narrow">Category</th>
-            <th className="right">Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((tx) => (
-            <tr
-              key={tx.id}
-              tabIndex={0}
-              role="button"
-              aria-label={`Edit ${tx.description}, ${money(tx.amount_cents)} on ${dateLabel(tx.occurred_on)}`}
-              onClick={() => open(tx)}
-              onKeyDown={(e) => onKey(e, tx)}
-            >
-              <td className="num hide-narrow" style={{ whiteSpace: "nowrap" }}>{dateLabel(tx.occurred_on)}</td>
-              <td>
-                {tx.description}
-                {tx.recurring_id !== null && (
-                  <span className="recurring-mark" title="Added automatically by a recurring rule"> ↻</span>
-                )}
-                {/* Phones: date and category move under the description, like Wallet. */}
-                <span className="subtle show-narrow-block">{tx.category} · {dateLabel(tx.occurred_on)}</span>
-              </td>
-              <td className="subtle hide-narrow">{tx.category}</td>
-              <td className={`right num ${tx.kind === "income" ? "amount-income" : ""}`} style={{ whiteSpace: "nowrap" }}>
-                {tx.kind === "income" ? "+" : "−"}
-                {money(tx.amount_cents)}
+    <div className="tx-list">
+      {groups.map((group) => (
+        <section key={group.day} className="tx-day">
+          <h3 className="tx-day-head">
+            <span>{dayHeading(group.day)}</span>
+            {group.items.length > 1 && (
+              <span className="num">{group.net >= 0 ? "+" : "−"}{money(Math.abs(group.net))}</span>
+            )}
+          </h3>
+          <ul>
+            {group.items.map((tx) => (
+              <li
+                key={tx.id}
+                tabIndex={0}
+                role="button"
+                aria-label={`Edit ${tx.description}, ${money(tx.amount_cents)}`}
+                onClick={() => setEditing(tx)}
+                onKeyDown={(e) => onKey(e, tx)}
+              >
+                <CategoryIcon category={tx.category} hint={tx.description} />
+                <div className="tx-main">
+                  <span className="tx-name">
+                    {tx.description}
+                    {tx.recurring_id !== null && (
+                      <span className="recurring-mark" title="Added automatically by a recurring rule"> ↻</span>
+                    )}
+                  </span>
+                  <span className="tx-sub">{tx.category}</span>
+                </div>
+                <span className={`tx-amount num ${tx.kind === "income" ? "amount-income" : ""}`}>
+                  {tx.kind === "income" ? "+" : "−"}{money(tx.amount_cents)}
+                </span>
                 <span className="row-chevron" aria-hidden="true">›</span>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
       {editing && (
         <EditTransactionSheet
           tx={editing}
@@ -72,7 +95,22 @@ export function TransactionTable({ items, onChanged }: { items: Transaction[]; o
   );
 }
 
-function EditTransactionSheet({ tx, onClose, onSaved }: { tx: Transaction; onClose: () => void; onSaved: () => void }) {
+function dayHeading(iso: string): string {
+  const today = todayIso();
+  const [y, m, d] = iso.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (iso === today) return "Today";
+  if (iso === `${yesterday.getFullYear()}-${pad(yesterday.getMonth() + 1)}-${pad(yesterday.getDate())}`) return "Yesterday";
+  const sameYear = y === new Date().getFullYear();
+  return date.toLocaleDateString("en-US", {
+    weekday: "short", month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }),
+  });
+}
+
+export function EditTransactionSheet({ tx, onClose, onSaved }: { tx: Transaction; onClose: () => void; onSaved: () => void }) {
   const [kind, setKind] = useState<Kind>(tx.kind);
   const [description, setDescription] = useState(tx.description);
   const [amount, setAmount] = useState((tx.amount_cents / 100).toFixed(2));
@@ -117,6 +155,12 @@ function EditTransactionSheet({ tx, onClose, onSaved }: { tx: Transaction; onClo
 
   return (
     <Sheet title="Edit transaction" onClose={onClose}>
+      <div className="sheet-hero">
+        <CategoryIcon category={category || tx.category} hint={description} size={52} />
+        <strong className={kind === "income" ? "amount-income" : ""}>
+          {kind === "income" ? "+" : "−"}${amount || "0.00"}
+        </strong>
+      </div>
       <form className="form" onSubmit={save}>
         <div className="segmented" role="group" aria-label="Transaction type">
           {(["expense", "income"] as Kind[]).map((k) => (

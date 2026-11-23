@@ -24,6 +24,7 @@ POST   /api/import/preview           read a CSV and show what importing would do
 POST   /api/import                   import a CSV's new transactions
 GET    /api/reports/categories       spending per category (optionally one month)
 GET    /api/reports/monthly          last 12 months with how unusual each was
+GET    /api/reports/pace?month=      running total through a month vs the month before
 GET    /api/holdings                 your holdings
 POST   /api/holdings                 add one
 PATCH  /api/holdings/{id}            change name, symbol, quantity or value
@@ -48,10 +49,12 @@ whatever opens the app -- your laptop, your phone, a server that's always on --
 sees them as soon as they're due, with no background job needed.
 """
 
+import calendar
 import csv
 import io
 import json
 import math
+import mimetypes
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, Union
@@ -76,6 +79,7 @@ from .models import (
     parse_date,
     parse_money,
     parse_month,
+    shift_month,
 )
 from .paths import FRONTEND_DIST, database_path
 from .prices import PriceProvider, PriceService, PriceUnavailable, YahooPriceProvider
@@ -567,6 +571,54 @@ def create_app(
             ],
         }
 
+    @app.get("/api/reports/pace")
+    def spending_pace(
+        month: Optional[str] = None, controlled: bool = True, store: Store = Depends(get_store)
+    ) -> Dict[str, Any]:
+        """Running total of spending through a month, next to the month before.
+
+        With ``controlled`` (the default) and covered categories set, covered
+        costs (e.g. rent your parents pay) are left out, so one big bill
+        doesn't flatten the chart.
+        """
+        month = _month_or_400(month) or month_of(today())
+        covered = store.covered_categories()[0] if controlled else []
+        previous = shift_month(month, -1)
+
+        def series(m: str, through: Optional[int] = None) -> List[Dict[str, int]]:
+            y, mo = (int(p) for p in m.split("-"))
+            days = calendar.monthrange(y, mo)[1]
+            daily = store.daily_totals(Kind.EXPENSE, date(y, mo, 1), date(y, mo, days), exclude_categories=covered)
+            points, running = [], 0
+            for day in range(1, min(days, through or days) + 1):
+                running += daily.get(date(y, mo, day), 0)
+                points.append({"day": day, "cumulative_cents": running})
+            return points
+
+        current = month_of(today())
+        y, mo = (int(p) for p in month.split("-"))
+        days_in_month = calendar.monthrange(y, mo)[1]
+        through = today().day if month == current else (days_in_month if month < current else 0)
+        this_month = series(month, through) if through else []
+        last_month = series(previous)
+        spent = this_month[-1]["cumulative_cents"] if this_month else 0
+        same_point = last_month[min(through, len(last_month)) - 1]["cumulative_cents"] if through and last_month else 0
+        return {
+            "month": month,
+            "previous_month": previous,
+            "days_in_month": days_in_month,
+            "through_day": through,
+            "in_progress": month == current,
+            "controlled": bool(covered),
+            "covered_categories": covered,
+            "this_month": this_month,
+            "last_month": last_month,
+            "spent_cents": spent,
+            "last_month_same_point_cents": same_point,
+            "last_month_total_cents": last_month[-1]["cumulative_cents"] if last_month else 0,
+            "difference_cents": spent - same_point,
+        }
+
     @app.get("/api/reports/monthly")
     def monthly_report(store: Store = Depends(get_store)) -> Dict[str, Any]:
         report = reports.monthly_report(
@@ -703,6 +755,7 @@ def create_app(
 
     # -------------------------------------------------- the website
     # Mounted last so every /api route above takes priority.
+    mimetypes.add_type("application/manifest+json", ".webmanifest")  # for "Add to Home screen"
     if static_dir is not None and Path(static_dir).is_dir():
         app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="frontend")
 
