@@ -44,7 +44,12 @@ export function TransactionTable({
           {items.map((tx) => (
             <tr key={tx.id}>
               <td className="num" style={{ whiteSpace: "nowrap" }}>{dateLabel(tx.occurred_on)}</td>
-              <td>{tx.description}</td>
+              <td>
+                {tx.description}
+                {tx.recurring_id !== null && (
+                  <span className="recurring-mark" title="Added automatically by a recurring rule"> ↻</span>
+                )}
+              </td>
               <td className="subtle">{tx.category}</td>
               <td className={`right num ${tx.kind === "income" ? "amount-income" : ""}`} style={{ whiteSpace: "nowrap" }}>
                 {tx.kind === "income" ? "+" : "−"}

@@ -1,6 +1,14 @@
 // Display helpers. Amounts arrive from the API as integer cents.
 
-import type { AssetType } from "./api";
+import type { AssetType, Frequency } from "./api";
+
+export const FREQUENCIES: { value: Frequency; label: string; every: string }[] = [
+  { value: "weekly", label: "Weekly", every: "every week" },
+  { value: "biweekly", label: "Every 2 weeks", every: "every 2 weeks" },
+  { value: "monthly", label: "Monthly", every: "every month" },
+  { value: "yearly", label: "Yearly", every: "every year" },
+];
+export const frequencyText = (f: Frequency) => FREQUENCIES.find((x) => x.value === f)!.every;
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 const usdCompact = new Intl.NumberFormat("en-US", {

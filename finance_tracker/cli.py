@@ -105,6 +105,9 @@ class App:
                 self.out("Pick a number from the menu.")
 
     def _greet(self) -> None:
+        added = self.store.apply_recurring(self.today())
+        if added:
+            self.out(f"Added {added} recurring transaction(s) that came due.")
         name = self.store.profile_name()
         if name is None:
             self.out("Welcome to your finance tracker! Looks like you're new here.")
@@ -534,6 +537,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         help="start the web dashboard instead of the terminal app",
     )
     parser.add_argument("--port", type=int, default=8000, help="port for --web (default: 8000)")
+    parser.add_argument("--open", action="store_true", help="with --web, open the dashboard in your browser")
     args = parser.parse_args(argv)
 
     if args.web:
@@ -546,7 +550,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 "then run:  .venv/bin/python main.py --web"
             )
             raise SystemExit(1)
-        serve(args.db, port=args.port)
+        serve(args.db, port=args.port, open_browser=args.open)
         return
 
     with Store(args.db) as store:

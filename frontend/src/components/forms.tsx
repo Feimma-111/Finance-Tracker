@@ -1,7 +1,12 @@
 import { useState, type FormEvent } from "react";
-import { api, type AssetType, type Kind, type Quote } from "../api";
-import { ASSET_TYPES, money, todayIso } from "../format";
+import { api, type AssetType, type Frequency, type Kind, type Quote } from "../api";
+import { ASSET_TYPES, dateLabel, FREQUENCIES, frequencyText, money, todayIso } from "../format";
 import { useAsync } from "../hooks";
+
+function oneYearFromToday(): string {
+  const [y, m, d] = todayIso().split("-");
+  return `${Number(y) + 1}-${m}-${d}`;
+}
 
 /* ------------------------------------------------------------------ add a transaction
    Validation happens on the server (the same rules as the terminal app);
@@ -13,6 +18,7 @@ export function TransactionForm({ onSaved, version }: { onSaved: () => void; ver
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState("");
   const [date, setDate] = useState(todayIso());
+  const [repeat, setRepeat] = useState<Frequency | "">("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const categories = useAsync(() => api.categories(kind), [kind, version]);
@@ -23,8 +29,19 @@ export function TransactionForm({ onSaved, version }: { onSaved: () => void; ver
     setBusy(true);
     setMessage(null);
     try {
-      const saved = await api.addTransaction({ kind, description, amount, category, occurred_on: date });
-      setMessage({ text: `Saved ${money(saved.amount_cents)} for ${saved.description}.`, error: false });
+      if (repeat) {
+        const rule = await api.addRecurring({ kind, description, amount, category, frequency: repeat, start_on: date });
+        const added = rule.created ? `Added ${rule.created} so far. ` : "";
+        setMessage({
+          text: `Repeats ${frequencyText(rule.frequency)}. ${added}Next on ${dateLabel(rule.next_due)}.`,
+          error: false,
+        });
+        setRepeat("");
+        setDate(todayIso());
+      } else {
+        const saved = await api.addTransaction({ kind, description, amount, category, occurred_on: date });
+        setMessage({ text: `Saved ${money(saved.amount_cents)} for ${saved.description}.`, error: false });
+      }
       setDescription("");
       setAmount("");
       onSaved();
@@ -63,10 +80,38 @@ export function TransactionForm({ onSaved, version }: { onSaved: () => void; ver
           </div>
         </label>
         <label className="field">
-          <span>Date</span>
-          <input type="date" value={date} max={todayIso()} onChange={(e) => setDate(e.target.value)} />
+          <span>{repeat ? "First date" : "Date"}</span>
+          <input
+            type="date"
+            value={date}
+            max={repeat ? oneYearFromToday() : todayIso()}
+            onChange={(e) => setDate(e.target.value)}
+          />
         </label>
       </div>
+      <label className="field">
+        <span>Repeat</span>
+        <select
+          value={repeat}
+          onChange={(e) => {
+            const next = e.target.value as Frequency | "";
+            setRepeat(next);
+            // A one-off can't be in the future; snap back if switching off repeat.
+            if (!next && date > todayIso()) setDate(todayIso());
+          }}
+        >
+          <option value="">Doesn't repeat</option>
+          {FREQUENCIES.map((f) => (
+            <option key={f.value} value={f.value}>{f.label}</option>
+          ))}
+        </select>
+        {repeat && (
+          <span className="hint">
+            Added automatically {frequencyText(repeat)} from the first date. If that date is in the past,
+            the payments since then are filled in too.
+          </span>
+        )}
+      </label>
       <label className="field">
         <span>Category</span>
         <input type="text" list={listId} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Pick or type a new one" required />
@@ -85,7 +130,7 @@ export function TransactionForm({ onSaved, version }: { onSaved: () => void; ver
       )}
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <button className="btn btn-primary" type="submit" disabled={busy}>
-          {busy ? "Saving…" : `Add ${kind}`}
+          {busy ? "Saving…" : repeat ? `Add recurring ${kind}` : `Add ${kind}`}
         </button>
         {message && <span className={`message ${message.error ? "error" : "success"}`}>{message.text}</span>}
       </div>

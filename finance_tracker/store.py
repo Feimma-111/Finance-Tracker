@@ -17,7 +17,16 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple, Union
 
-from .models import AssetType, Holding, Kind, Transaction, shift_month
+from .models import (
+    AssetType,
+    Frequency,
+    Holding,
+    Kind,
+    RecurringRule,
+    Transaction,
+    occurrence,
+    shift_month,
+)
 
 SCHEMA_V1 = """
 CREATE TABLE profile (
@@ -70,10 +79,36 @@ CREATE TABLE net_worth_snapshots (
 );
 """
 
+# Version 2: recurring transactions (rent, subscriptions, paychecks).
+SCHEMA_V2 = """
+CREATE TABLE recurring (
+    id               INTEGER PRIMARY KEY,
+    description      TEXT    NOT NULL,
+    amount_cents     INTEGER NOT NULL CHECK (amount_cents > 0),
+    kind             TEXT    NOT NULL CHECK (kind IN ('expense', 'income')),
+    category_id      INTEGER NOT NULL REFERENCES categories(id),
+    frequency        TEXT    NOT NULL
+                     CHECK (frequency IN ('weekly', 'biweekly', 'monthly', 'yearly')),
+    start_on         TEXT    NOT NULL,           -- YYYY-MM-DD, the first occurrence
+    generated_count  INTEGER NOT NULL DEFAULT 0, -- occurrences already turned into transactions
+    next_due         TEXT    NOT NULL,           -- cached so "anything due?" is one indexed lookup
+    active           INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX recurring_due ON recurring (active, next_due);
+
+-- Which rule (if any) created a transaction. Deleting a rule keeps its past
+-- transactions; they just stop pointing at it.
+ALTER TABLE transactions ADD COLUMN recurring_id INTEGER
+    REFERENCES recurring(id) ON DELETE SET NULL;
+"""
+
 # Each entry upgrades the schema by one version; PRAGMA user_version records how
 # far a database file has been upgraded. Never edit an entry once real data
 # depends on it -- append a new one instead.
-MIGRATIONS: Tuple[str, ...] = (SCHEMA_V1,)
+MIGRATIONS: Tuple[str, ...] = (SCHEMA_V1, SCHEMA_V2)
+
+# Safety valve: never create more than this many transactions in one catch-up.
+MAX_CATCH_UP = 1000
 
 
 class Store:
@@ -128,6 +163,16 @@ class Store:
                 "INSERT INTO profile (id, name, created_at) VALUES (1, ?, ?)",
                 (name.strip(), _utc_now()),
             )
+
+    def rename_profile(self, name: str) -> None:
+        with self.conn:
+            self.conn.execute("UPDATE profile SET name = ? WHERE id = 1", (name.strip(),))
+
+    def get_setting(self, name: str, default: str) -> str:
+        return self.get_meta(f"setting:{name}") or default
+
+    def set_setting(self, name: str, value: str) -> None:
+        self.set_meta(f"setting:{name}", value)
 
     def get_meta(self, key: str) -> Optional[str]:
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
@@ -197,8 +242,9 @@ class Store:
     def _insert_transaction(self, tx: Transaction) -> int:
         cursor = self.conn.execute(
             """
-            INSERT INTO transactions (description, amount_cents, kind, category_id, occurred_on)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO transactions
+                (description, amount_cents, kind, category_id, occurred_on, recurring_id)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 tx.description.strip(),
@@ -206,6 +252,7 @@ class Store:
                 tx.kind.value,
                 self._category_id(tx.category),
                 tx.occurred_on.isoformat(),
+                tx.recurring_id,
             ),
         )
         return cursor.lastrowid
@@ -266,6 +313,130 @@ class Store:
             (kind.value,),
         )
         return [(row["month"], row["total"]) for row in rows]
+
+    # -------------------------------------------------------------- recurring
+
+    def add_recurring(self, rule: RecurringRule) -> int:
+        with self.conn:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO recurring (description, amount_cents, kind, category_id,
+                                       frequency, start_on, generated_count, next_due, active)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rule.description.strip(),
+                    rule.amount_cents,
+                    rule.kind.value,
+                    self._category_id(rule.category),
+                    rule.frequency.value,
+                    rule.start_on.isoformat(),
+                    rule.generated_count,
+                    rule.next_due.isoformat(),
+                    int(rule.active),
+                ),
+            )
+        return cursor.lastrowid
+
+    def recurring_rules(self) -> List[RecurringRule]:
+        rows = self.conn.execute(
+            _RULE_SELECT + " ORDER BY r.active DESC, r.next_due, r.description COLLATE NOCASE"
+        )
+        return [_row_to_rule(row) for row in rows]
+
+    def get_recurring(self, rule_id: int) -> Optional[RecurringRule]:
+        row = self.conn.execute(_RULE_SELECT + " WHERE r.id = ?", (rule_id,)).fetchone()
+        return _row_to_rule(row) if row else None
+
+    def update_recurring(
+        self,
+        rule_id: int,
+        *,
+        today: date,
+        active: Optional[bool] = None,
+        amount_cents: Optional[int] = None,
+    ) -> bool:
+        """Pause/resume a rule or change its amount (rent went up).
+
+        Resuming skips the occurrences that fell while it was paused --
+        otherwise un-pausing three months later would backfill three rents.
+        A new amount applies to future occurrences only.
+        """
+        rule = self.get_recurring(rule_id)
+        if rule is None:
+            return False
+        count = rule.generated_count
+        if active and not rule.active:
+            while rule.occurrence(count) < today:
+                count += 1
+        with self.conn:
+            self.conn.execute(
+                """
+                UPDATE recurring
+                SET active = ?, amount_cents = ?, generated_count = ?, next_due = ?
+                WHERE id = ?
+                """,
+                (
+                    int(rule.active if active is None else active),
+                    rule.amount_cents if amount_cents is None else amount_cents,
+                    count,
+                    rule.occurrence(count).isoformat(),
+                    rule_id,
+                ),
+            )
+        return True
+
+    def delete_recurring(self, rule_id: int) -> bool:
+        """Stop a rule. Transactions it already created are kept."""
+        with self.conn:
+            cursor = self.conn.execute("DELETE FROM recurring WHERE id = ?", (rule_id,))
+        return cursor.rowcount > 0
+
+    def apply_recurring(self, today: date) -> int:
+        """Turn every occurrence due on or before ``today`` into a real transaction.
+
+        Safe to call as often as you like: each occurrence is created exactly
+        once, because ``generated_count`` moves forward in the same database
+        transaction that inserts it. Returns how many were created.
+        """
+        today_iso = today.isoformat()
+        # Cheap check first (uses the recurring_due index), so most calls do no writing.
+        if not self.conn.execute(
+            "SELECT 1 FROM recurring WHERE active = 1 AND next_due <= ? LIMIT 1", (today_iso,)
+        ).fetchone():
+            return 0
+
+        created = 0
+        with self.conn:
+            # IMMEDIATE takes the write lock *before* reading, so two requests
+            # arriving at once can't both see the same rule as due and double-post.
+            self.conn.execute("BEGIN IMMEDIATE")
+            rows = self.conn.execute(
+                "SELECT * FROM recurring WHERE active = 1 AND next_due <= ?", (today_iso,)
+            ).fetchall()
+            for row in rows:
+                frequency = Frequency(row["frequency"])
+                start = date.fromisoformat(row["start_on"])
+                count = row["generated_count"]
+                due = occurrence(start, frequency, count)
+                while due <= today and created < MAX_CATCH_UP:
+                    self.conn.execute(
+                        """
+                        INSERT INTO transactions
+                            (description, amount_cents, kind, category_id, occurred_on, recurring_id)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (row["description"], row["amount_cents"], row["kind"],
+                         row["category_id"], due.isoformat(), row["id"]),
+                    )
+                    count += 1
+                    created += 1
+                    due = occurrence(start, frequency, count)
+                self.conn.execute(
+                    "UPDATE recurring SET generated_count = ?, next_due = ? WHERE id = ?",
+                    (count, due.isoformat(), row["id"]),
+                )
+        return created
 
     # --------------------------------------------------------------- holdings
 
@@ -381,8 +552,14 @@ class Store:
 # ------------------------------------------------------------------- helpers
 
 _TX_SELECT = """
-    SELECT t.id, t.description, t.amount_cents, t.kind, t.occurred_on, c.name AS category
+    SELECT t.id, t.description, t.amount_cents, t.kind, t.occurred_on, t.recurring_id,
+           c.name AS category
     FROM transactions t JOIN categories c ON c.id = t.category_id
+"""
+
+_RULE_SELECT = """
+    SELECT r.*, c.name AS category
+    FROM recurring r JOIN categories c ON c.id = r.category_id
 """
 
 # A date range (not substr) so SQLite can use the transactions_by_date index.
@@ -409,6 +586,21 @@ def _row_to_transaction(row: sqlite3.Row) -> Transaction:
         category=row["category"],
         occurred_on=date.fromisoformat(row["occurred_on"]),
         kind=Kind(row["kind"]),
+        recurring_id=row["recurring_id"],
+    )
+
+
+def _row_to_rule(row: sqlite3.Row) -> RecurringRule:
+    return RecurringRule(
+        id=row["id"],
+        description=row["description"],
+        amount_cents=row["amount_cents"],
+        category=row["category"],
+        frequency=Frequency(row["frequency"]),
+        start_on=date.fromisoformat(row["start_on"]),
+        kind=Kind(row["kind"]),
+        generated_count=row["generated_count"],
+        active=bool(row["active"]),
     )
 
 

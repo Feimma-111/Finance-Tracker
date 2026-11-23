@@ -11,6 +11,26 @@ export interface Transaction {
   category: string;
   occurred_on: string; // YYYY-MM-DD
   kind: Kind;
+  recurring_id: number | null; // set when a recurring rule created it
+}
+
+export type Frequency = "weekly" | "biweekly" | "monthly" | "yearly";
+
+export interface RecurringRule {
+  id: number;
+  description: string;
+  amount_cents: number;
+  category: string;
+  kind: Kind;
+  frequency: Frequency;
+  start_on: string;
+  next_due: string;
+  active: boolean;
+}
+
+export interface Settings {
+  theme: "system" | "light" | "dark";
+  database: string;
 }
 
 export interface Summary {
@@ -145,6 +165,17 @@ const json = (method: string, body: unknown): RequestInit => ({ method, body: JS
 export const api = {
   profile: () => request<{ name: string | null }>("/api/profile"),
   createProfile: (name: string) => request<{ name: string }>("/api/profile", json("POST", { name })),
+  renameProfile: (name: string) => request<{ name: string }>("/api/profile", json("PUT", { name })),
+
+  settings: () => request<Settings>("/api/settings"),
+  saveSettings: (body: Pick<Settings, "theme">) => request<Settings>("/api/settings", json("PUT", body)),
+
+  recurring: () => request<RecurringRule[]>("/api/recurring"),
+  addRecurring: (body: Omit<NewTransaction, "occurred_on"> & { frequency: Frequency; start_on: string }) =>
+    request<RecurringRule & { created: number }>("/api/recurring", json("POST", body)),
+  updateRecurring: (id: number, body: { active?: boolean; amount?: string }) =>
+    request<RecurringRule>(`/api/recurring/${id}`, json("PATCH", body)),
+  deleteRecurring: (id: number) => request<void>(`/api/recurring/${id}`, { method: "DELETE" }),
 
   summary: (month?: string | null) => request<Summary>(`/api/summary${query({ month })}`),
   months: () => request<string[]>("/api/months"),

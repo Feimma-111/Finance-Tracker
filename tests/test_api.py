@@ -143,6 +143,66 @@ class ApiTests(unittest.TestCase):
         self.assertIn("no market data", worth["lines"][0]["note"])
         self.assertEqual(self.client.get("/api/net-worth/history").json(), [])
 
+    # ------------------------------------------------- recurring / settings
+
+    def test_recurring_rules(self):
+        body = {"description": "Rent", "amount": "1250", "category": "Housing",
+                "frequency": "monthly", "start_on": "2026-10-01"}
+        created = self.client.post("/api/recurring", json=body)
+        self.assertEqual(created.status_code, 201)
+        rule = created.json()
+        self.assertEqual((rule["created"], rule["next_due"]), (2, "2026-12-01"))  # Oct + Nov added
+
+        items = self.client.get("/api/transactions").json()["items"]
+        self.assertEqual(len(items), 2)
+        self.assertTrue(all(t["recurring_id"] == rule["id"] for t in items))
+
+        paused = self.client.patch(f"/api/recurring/{rule['id']}", json={"active": False}).json()
+        self.assertFalse(paused["active"])
+        raised = self.client.patch(f"/api/recurring/{rule['id']}", json={"amount": "1300"}).json()
+        self.assertEqual(raised["amount_cents"], 130000)
+        self.assertEqual(self.client.patch(f"/api/recurring/{rule['id']}", json={"amount": "-5"}).status_code, 400)
+
+        self.assertEqual(self.client.delete(f"/api/recurring/{rule['id']}").status_code, 204)
+        self.assertEqual(self.client.get("/api/recurring").json(), [])
+        self.assertEqual(len(self.client.get("/api/transactions").json()["items"]), 2)  # history kept
+
+    def test_recurring_validation(self):
+        bad = {"description": "Gym", "amount": "40", "category": "Health",
+               "frequency": "monthly", "start_on": "2030-01-01"}
+        self.assertEqual(self.client.post("/api/recurring", json=bad).status_code, 400)
+        bad.update(start_on="", frequency="hourly")
+        self.assertEqual(self.client.post("/api/recurring", json=bad).status_code, 422)
+
+    def test_due_rules_are_caught_up_on_any_request(self):
+        state = {"today": TODAY}
+        app = create_app(
+            os.path.join(self.folder.name, "catchup.db"),
+            provider=self.provider,
+            today=lambda: state["today"],
+            static_dir=None,
+        )
+        with TestClient(app) as client:
+            client.post("/api/recurring", json={
+                "description": "Spotify", "amount": "11.99", "category": "Subscriptions",
+                "frequency": "monthly", "start_on": "2026-12-05",
+            })
+            self.assertEqual(client.get("/api/transactions").json()["total"], 0)
+            state["today"] = date(2027, 2, 10)  # app wasn't opened for a while
+            self.assertEqual(client.get("/api/profile").status_code, 200)  # any request
+            self.assertEqual(client.get("/api/transactions").json()["total"], 3)  # Dec, Jan, Feb
+
+    def test_settings_and_rename(self):
+        self.assertEqual(self.client.get("/api/settings").json()["theme"], "system")
+        self.assertEqual(self.client.put("/api/settings", json={"theme": "dark"}).json()["theme"], "dark")
+        self.assertEqual(self.client.get("/api/settings").json()["theme"], "dark")
+        self.assertEqual(self.client.put("/api/settings", json={"theme": "purple"}).status_code, 422)
+
+        self.assertEqual(self.client.put("/api/profile", json={"name": "Sam"}).status_code, 404)
+        self.client.post("/api/profile", json={"name": "Sam"})
+        self.assertEqual(self.client.put("/api/profile", json={"name": "Pete"}).json(), {"name": "Pete"})
+        self.assertEqual(self.client.get("/api/profile").json(), {"name": "Pete"})
+
     def test_quotes(self):
         self.assertEqual(self.client.get("/api/quotes/aapl").json()["price"], 342.56)
         self.assertEqual(self.client.get("/api/quotes/NOPE").status_code, 404)

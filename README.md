@@ -6,6 +6,10 @@ charts or as a **terminal app**. Both read and write the same data.
 
 ## Web dashboard
 
+**Easiest:** double-click **Finance Tracker.command** in Finder. It starts the server
+and opens your browser. Close the Terminal window to stop it. You can drag it to the
+Dock.
+
 One-time setup, from the project folder:
 
 ```bash
@@ -121,6 +125,26 @@ legacy/main_v1.py           the original single-file version
 | GET | `/api/quotes/{symbol}` | live price (used to check tickers) |
 | GET | `/api/net-worth` | value everything; records today's snapshot |
 | GET | `/api/net-worth/history` | daily snapshots for the trend chart |
+| GET / POST | `/api/recurring` | recurring rules / add one (past occurrences filled in) |
+| PATCH / DELETE | `/api/recurring/{id}` | pause, resume, change amount / stop |
+| GET / PUT | `/api/settings` | theme (system, light, dark) |
+| PUT | `/api/profile` | rename |
+
+### Recurring transactions
+
+Choose a **Repeat** option (weekly, every 2 weeks, monthly, yearly) when adding a
+transaction. At the start of every request, the server turns any occurrences that
+have come due into real transactions, marked ↻. That makes the behavior the same
+everywhere:
+
+- On your laptop, they appear when you open the app.
+- On an always-on server, they appear as soon as any device checks in.
+- If the app was closed for months, it catches up on the next open.
+
+Each occurrence is created exactly once, even if two requests arrive at the same
+moment. Monthly rules on the 29th–31st clamp to shorter months without drifting
+(Jan 31 → Feb 28 → Mar 31). Pausing and resuming skips the months that were
+paused. Stopping a rule keeps the transactions it already created.
 
 ## Design decisions
 
@@ -154,6 +178,5 @@ legacy/main_v1.py           the original single-file version
   way, it would be a new API endpoint that sends a summary, not raw
   transactions.
 
-Ideas not built yet: recurring transactions (rent, subscriptions), budgets per
-category, cost basis and gain/loss for investments, liabilities (loans, credit
+Ideas not built yet: budgets per category, cost basis and gain/loss for investments, liabilities (loans, credit
 cards), and non-USD holdings.

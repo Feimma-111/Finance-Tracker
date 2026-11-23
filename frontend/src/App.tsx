@@ -1,15 +1,17 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api } from "./api";
-import { useAsync } from "./hooks";
+import { api, type Settings as SettingsData } from "./api";
+import { applyTheme, useAsync, type ThemeChoice } from "./hooks";
 import { Dashboard } from "./pages/Dashboard";
 import { Holdings } from "./pages/Holdings";
+import { Settings } from "./pages/Settings";
 import { Transactions } from "./pages/Transactions";
 
-type Page = "dashboard" | "transactions" | "holdings";
+type Page = "dashboard" | "transactions" | "holdings" | "settings";
 const PAGES: { id: Page; label: string }[] = [
   { id: "dashboard", label: "Dashboard" },
   { id: "transactions", label: "Transactions" },
   { id: "holdings", label: "Holdings" },
+  { id: "settings", label: "Settings" },
 ];
 
 // The page lives in the URL hash (#/holdings), so refreshing or bookmarking
@@ -28,6 +30,26 @@ export default function App() {
   const onChanged = () => setVersion((v) => v + 1);
 
   const profile = useAsync(api.profile, [profileVersion]);
+
+  // Settings live on the server (so every device gets the same theme);
+  // applyTheme also caches the choice so the next page load starts right.
+  const [settings, setSettings] = useState<SettingsData>();
+  useEffect(() => {
+    api.settings().then((s) => {
+      setSettings(s);
+      applyTheme(s.theme);
+    }, () => {});
+  }, []);
+
+  async function changeTheme(theme: ThemeChoice) {
+    applyTheme(theme); // instant; then save
+    setSettings((s) => (s ? { ...s, theme } : s));
+    try {
+      setSettings(await api.saveSettings({ theme }));
+    } catch {
+      // keep the local choice; it'll be retried next time it's changed
+    }
+  }
 
   useEffect(() => {
     const update = () => setPage(pageFromHash());
@@ -69,6 +91,14 @@ export default function App() {
         {page === "dashboard" && <Dashboard version={version} onChanged={onChanged} />}
         {page === "transactions" && <Transactions version={version} onChanged={onChanged} />}
         {page === "holdings" && <Holdings version={version} onChanged={onChanged} />}
+        {page === "settings" && (
+          <Settings
+            name={profile.data.name}
+            settings={settings}
+            onTheme={changeTheme}
+            onRenamed={() => setProfileVersion((v) => v + 1)}
+          />
+        )}
       </main>
     </div>
   );

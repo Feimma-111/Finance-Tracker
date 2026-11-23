@@ -5,6 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
     <title>Finance Tracker</title>
+    <script>
+      // Apply the saved theme before the page draws, so it doesn't flash the
+      // wrong colors. The server's setting (loaded by the app) is the source of
+      // truth; this is just a cached copy from the last visit.
+      try {
+        var theme = localStorage.getItem("theme");
+        if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

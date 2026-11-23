@@ -13,6 +13,7 @@ Design notes
 
 from __future__ import annotations
 
+import calendar
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -43,6 +44,22 @@ class AssetType(str, Enum):
         return self in (AssetType.STOCK, AssetType.CRYPTO, AssetType.GOLD)
 
 
+class Frequency(str, Enum):
+    WEEKLY = "weekly"
+    BIWEEKLY = "biweekly"
+    MONTHLY = "monthly"
+    YEARLY = "yearly"
+
+
+def _check_entry(description: str, amount_cents: int, category: str) -> None:
+    if not isinstance(amount_cents, int) or amount_cents <= 0:
+        raise ValueError("amount must be greater than zero")
+    if not description.strip():
+        raise ValueError("description can't be empty")
+    if not category.strip():
+        raise ValueError("category can't be empty")
+
+
 @dataclass(frozen=True)
 class Transaction:
     description: str
@@ -51,14 +68,59 @@ class Transaction:
     occurred_on: date
     kind: Kind = Kind.EXPENSE
     id: Optional[int] = None
+    recurring_id: Optional[int] = None  # set when a recurring rule created it
 
     def __post_init__(self) -> None:
-        if not isinstance(self.amount_cents, int) or self.amount_cents <= 0:
-            raise ValueError("amount must be greater than zero")
-        if not self.description.strip():
-            raise ValueError("description can't be empty")
-        if not self.category.strip():
-            raise ValueError("category can't be empty")
+        _check_entry(self.description, self.amount_cents, self.category)
+
+
+@dataclass(frozen=True)
+class RecurringRule:
+    """A transaction that repeats, like rent or a subscription.
+
+    ``generated_count`` is how many occurrences have already been turned into
+    real transactions. The next one is always computed from ``start_on`` (not
+    from the previous occurrence), so a rule on the 31st goes Jan 31 -> Feb 28
+    -> Mar 31 instead of drifting to the 28th forever.
+    """
+
+    description: str
+    amount_cents: int
+    category: str
+    frequency: Frequency
+    start_on: date
+    kind: Kind = Kind.EXPENSE
+    generated_count: int = 0
+    active: bool = True
+    id: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        _check_entry(self.description, self.amount_cents, self.category)
+
+    def occurrence(self, n: int) -> date:
+        return occurrence(self.start_on, self.frequency, n)
+
+    @property
+    def next_due(self) -> date:
+        return self.occurrence(self.generated_count)
+
+
+def add_months(day: date, months: int) -> date:
+    """Same day-of-month, ``months`` later; clamped to the month's last day."""
+    year, month_index = divmod(day.year * 12 + (day.month - 1) + months, 12)
+    month = month_index + 1
+    return date(year, month, min(day.day, calendar.monthrange(year, month)[1]))
+
+
+def occurrence(start: date, frequency: Frequency, n: int) -> date:
+    """The date of the n-th occurrence (n=0 is ``start`` itself)."""
+    if frequency is Frequency.WEEKLY:
+        return start + timedelta(weeks=n)
+    if frequency is Frequency.BIWEEKLY:
+        return start + timedelta(weeks=2 * n)
+    if frequency is Frequency.MONTHLY:
+        return add_months(start, n)
+    return add_months(start, 12 * n)
 
 
 @dataclass(frozen=True)
@@ -134,8 +196,12 @@ def cents_to_plain(cents: int) -> str:
 _DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d")
 
 
-def parse_date(text: str, *, today: date) -> date:
-    """Accept YYYY-MM-DD, YYYY/MM/DD, 'today', 'yesterday', or blank (= today)."""
+def parse_date(text: str, *, today: date, allow_future: bool = False) -> date:
+    """Accept YYYY-MM-DD, YYYY/MM/DD, 'today', 'yesterday', or blank (= today).
+
+    Future dates are rejected unless ``allow_future`` (used for the first date
+    of a recurring rule, which may be next month's rent).
+    """
     cleaned = text.strip().lower()
     if cleaned in ("", "today"):
         return today
@@ -146,8 +212,10 @@ def parse_date(text: str, *, today: date) -> date:
             parsed = datetime.strptime(cleaned, fmt).date()
         except ValueError:
             continue
-        if parsed > today:
+        if parsed > today and not allow_future:
             raise ValueError("that date is in the future")
+        if allow_future and parsed > add_months(today, 12):
+            raise ValueError("pick a date within the next year")
         return parsed
     raise ValueError("use YYYY-MM-DD, or press Enter for today")
 

@@ -27,6 +27,17 @@ DELETE /api/holdings/{id}            remove one
 GET    /api/quotes/{symbol}          live price for a ticker (used to check symbols)
 GET    /api/net-worth                value everything at live prices
 GET    /api/net-worth/history        daily net-worth snapshots
+GET    /api/recurring                recurring rules (rent, subscriptions...)
+POST   /api/recurring                create one (past occurrences are filled in)
+PATCH  /api/recurring/{id}           pause/resume or change the amount
+DELETE /api/recurring/{id}           stop it (past transactions are kept)
+GET    /api/settings                 app settings (theme)
+PUT    /api/settings                 change settings
+PUT    /api/profile                  rename
+
+Recurring transactions are caught up at the start of *every* request, so
+whatever opens the app -- your laptop, your phone, a server that's always on --
+sees them as soon as they're due, with no background job needed.
 """
 
 import csv
@@ -34,7 +45,7 @@ import io
 import math
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Union
+from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, Union
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.staticfiles import StaticFiles
@@ -44,8 +55,10 @@ from . import reports
 from .models import (
     GOLD_SYMBOL,
     AssetType,
+    Frequency,
     Holding,
     Kind,
+    RecurringRule,
     Transaction,
     cents_to_plain,
     month_of,
@@ -88,6 +101,27 @@ class HoldingUpdate(BaseModel):
     value: Optional[str] = None
 
 
+class RecurringIn(BaseModel):
+    description: str = Field(max_length=200)
+    amount: str
+    category: str = Field(max_length=60)
+    kind: Kind = Kind.EXPENSE
+    frequency: Frequency
+    start_on: Optional[str] = Field(None, description="first occurrence, YYYY-MM-DD; blank = today")
+
+
+class RecurringUpdate(BaseModel):
+    active: Optional[bool] = None
+    amount: Optional[str] = None
+
+
+THEMES = ("system", "light", "dark")
+
+
+class SettingsIn(BaseModel):
+    theme: Literal["system", "light", "dark"]
+
+
 # --------------------------------------------------------------------- app
 
 
@@ -111,6 +145,7 @@ def create_app(
         """One database connection per request, always closed afterwards."""
         store = Store(db_path, check_same_thread=False)
         try:
+            store.apply_recurring(today())
             yield store
         finally:
             store.close()
@@ -133,6 +168,77 @@ def create_app(
             raise HTTPException(409, "a profile already exists")
         store.create_profile(name)
         return {"name": name}
+
+    @app.put("/api/profile")
+    def rename_profile(body: ProfileIn, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "name can't be blank")
+        if store.profile_name() is None:
+            raise HTTPException(404, "no profile yet")
+        store.rename_profile(name)
+        return {"name": name}
+
+    # --------------------------------------------------------- settings
+
+    @app.get("/api/settings")
+    def get_settings(store: Store = Depends(get_store)) -> Dict[str, Any]:
+        theme = store.get_setting("theme", "system")
+        return {"theme": theme if theme in THEMES else "system", "database": db_path}
+
+    @app.put("/api/settings")
+    def put_settings(body: SettingsIn, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        store.set_setting("theme", body.theme)
+        return {"theme": body.theme, "database": db_path}
+
+    # -------------------------------------------------------- recurring
+
+    @app.get("/api/recurring")
+    def list_recurring(store: Store = Depends(get_store)) -> List[Dict[str, Any]]:
+        return [_rule_json(rule) for rule in store.recurring_rules()]
+
+    @app.post("/api/recurring", status_code=201)
+    def add_recurring(body: RecurringIn, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        try:
+            cents = parse_money(body.amount)
+            if cents <= 0:
+                raise ValueError("amount must be greater than zero")
+            rule = RecurringRule(
+                description=body.description.strip(),
+                amount_cents=cents,
+                category=body.category,
+                frequency=body.frequency,
+                start_on=parse_date(body.start_on or "", today=today(), allow_future=True),
+                kind=body.kind,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        rule_id = store.add_recurring(rule)
+        created = store.apply_recurring(today())  # fill in any occurrences already due
+        return {**_rule_json(store.get_recurring(rule_id)), "created": created}
+
+    @app.patch("/api/recurring/{rule_id}")
+    def update_recurring(
+        rule_id: int, body: RecurringUpdate, store: Store = Depends(get_store)
+    ) -> Dict[str, Any]:
+        try:
+            cents = None
+            if body.amount is not None:
+                cents = parse_money(body.amount)
+                if cents <= 0:
+                    raise ValueError("amount must be greater than zero")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        if not store.update_recurring(rule_id, today=today(), active=body.active, amount_cents=cents):
+            raise HTTPException(404, f"no recurring rule with id {rule_id}")
+        store.apply_recurring(today())  # resuming may make today's occurrence due
+        return _rule_json(store.get_recurring(rule_id))
+
+    @app.delete("/api/recurring/{rule_id}", status_code=204)
+    def delete_recurring(rule_id: int, store: Store = Depends(get_store)) -> Response:
+        if not store.delete_recurring(rule_id):
+            raise HTTPException(404, f"no recurring rule with id {rule_id}")
+        return Response(status_code=204)
 
     # ------------------------------------------------- transactions
 
@@ -366,14 +472,20 @@ def create_default_app() -> FastAPI:
     return create_app(database_path())
 
 
-def serve(db_path: Union[str, Path], *, port: int = 8000) -> None:
+def serve(db_path: Union[str, Path], *, port: int = 8000, open_browser: bool = False) -> None:
+    import threading
     import uvicorn
+    import webbrowser
 
+    url = f"http://127.0.0.1:{port}"
     has_site = FRONTEND_DIST.is_dir()
-    print(f"Finance tracker running at http://127.0.0.1:{port}")
+    print(f"Finance tracker running at {url}")
     if not has_site:
         print("  (The website isn't built yet: run `npm run build` in frontend/. The API works now.)")
-    print(f"  API docs: http://127.0.0.1:{port}/docs   Stop with Ctrl-C.")
+    print(f"  API docs: {url}/docs   Stop with Ctrl-C.")
+    if open_browser:
+        # Give the server a moment to start listening before the browser asks for the page.
+        threading.Timer(1.0, webbrowser.open, args=[url]).start()
     # 127.0.0.1 = only this computer can connect. Your financial data is never
     # exposed to other devices on your network.
     uvicorn.run(create_app(db_path), host="127.0.0.1", port=port, log_level="warning")
@@ -425,6 +537,21 @@ def _tx_json(tx: Transaction) -> Dict[str, Any]:
         "category": tx.category,
         "occurred_on": tx.occurred_on.isoformat(),
         "kind": tx.kind.value,
+        "recurring_id": tx.recurring_id,
+    }
+
+
+def _rule_json(rule: RecurringRule) -> Dict[str, Any]:
+    return {
+        "id": rule.id,
+        "description": rule.description,
+        "amount_cents": rule.amount_cents,
+        "category": rule.category,
+        "kind": rule.kind.value,
+        "frequency": rule.frequency.value,
+        "start_on": rule.start_on.isoformat(),
+        "next_due": rule.next_due.isoformat(),
+        "active": rule.active,
     }
 
 

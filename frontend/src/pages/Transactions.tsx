@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, CSV_EXPORT_URL } from "../api";
 import { TransactionForm } from "../components/forms";
+import { RecurringList } from "../components/RecurringList";
 import { TransactionTable } from "../components/TransactionTable";
 import { money, monthLabel } from "../format";
 import { useAsync } from "../hooks";
@@ -37,11 +38,20 @@ export function Transactions({ version, onChanged }: { version: number; onChange
           {list.error && <p className="message error">{list.error}</p>}
           {list.data && <TransactionTable items={items} onChanged={onChanged} />}
         </div>
-        <div className="card" style={{ alignSelf: "start" }}>
-          <div className="card-head">
-            <h2 className="card-title">Add a transaction</h2>
+        <div className="stack" style={{ alignContent: "start" }}>
+          <div className="card">
+            <div className="card-head">
+              <h2 className="card-title">Add a transaction</h2>
+            </div>
+            <TransactionForm onSaved={onChanged} version={version} />
           </div>
-          <TransactionForm onSaved={onChanged} version={version} />
+          <div className="card">
+            <div className="card-head">
+              <h2 className="card-title">Recurring</h2>
+              <span className="card-subtitle">Added automatically when due</span>
+            </div>
+            <RecurringList version={version} onChanged={onChanged} />
+          </div>
         </div>
       </div>
     </>

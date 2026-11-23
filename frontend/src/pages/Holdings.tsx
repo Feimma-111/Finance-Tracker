@@ -125,7 +125,7 @@ function HoldingsTable({ lines, onChanged }: { lines: NetWorthLine[]; onChanged:
                 </td>
                 <td className="right num">
                   {editing === line.id && priced(line) ? (
-                    <input autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} style={{ width: 110 }} aria-label="New quantity" />
+                    <input autoFocus onFocus={(e) => e.target.select()} value={draft} onChange={(e) => setDraft(e.target.value)} style={{ width: 110 }} aria-label="New quantity" />
                   ) : priced(line) ? (
                     quantity(line.quantity)
                   ) : (
@@ -137,7 +137,7 @@ function HoldingsTable({ lines, onChanged }: { lines: NetWorthLine[]; onChanged:
                 </td>
                 <td className="right num">
                   {editing === line.id && !priced(line) ? (
-                    <input autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} style={{ width: 120 }} aria-label="New value" />
+                    <input autoFocus onFocus={(e) => e.target.select()} value={draft} onChange={(e) => setDraft(e.target.value)} style={{ width: 120 }} aria-label="New value" />
                   ) : line.value_cents !== null ? (
                     money(line.value_cents)
                   ) : (

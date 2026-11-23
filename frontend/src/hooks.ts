@@ -65,10 +65,31 @@ export function useChartTheme(): ChartTheme {
   };
   const [theme, setTheme] = useState(read);
   useEffect(() => {
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
     const update = () => setTheme(read());
+    // The OS switching light/dark...
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
     media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
+    // ...or the Settings page changing <html data-theme>.
+    const observer = new MutationObserver(update);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => {
+      media.removeEventListener("change", update);
+      observer.disconnect();
+    };
   }, []);
   return theme;
+}
+
+export type ThemeChoice = "system" | "light" | "dark";
+
+/** Point <html data-theme> at the choice and remember it for the next page load. */
+export function applyTheme(choice: ThemeChoice): void {
+  const root = document.documentElement;
+  if (choice === "system") delete root.dataset.theme;
+  else root.dataset.theme = choice;
+  try {
+    localStorage.setItem("theme", choice);
+  } catch {
+    // storage blocked (private window); the theme still applies for this visit
+  }
 }
