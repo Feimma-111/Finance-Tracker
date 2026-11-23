@@ -32,6 +32,23 @@ computer can connect, so your data isn't exposed to your network.
 To browse the API itself, open http://127.0.0.1:8000/docs. It's an interactive page
 that FastAPI generates from the code.
 
+### Passcode
+
+The web app is locked with a 6-digit passcode, which you choose the first time
+you open it. Each device then stays signed in for 30 days.
+
+- **Stored safely.** Only a slow, salted PBKDF2 hash of the passcode is kept
+  (600,000 rounds). The sign-in cookie is HttpOnly and SameSite=Strict, and the
+  database stores only a hash of each session token.
+- **Guessing is impractical.** After 5 wrong tries the app locks for 30
+  seconds, and the lock doubles with each further miss, up to an hour.
+- **Settings → Passcode** lets you change it, which signs out your other
+  devices, or **Lock now**.
+- **Forgot it?** On the Mac, run `.venv/bin/python main.py --reset-passcode`
+  and the app will ask for a new one.
+- The terminal app isn't locked: it reads the database file directly, so anyone
+  using your Mac could open the file anyway.
+
 ### On your phone
 
 The app runs on your Mac, and your phone opens it over Tailscale, so it isn't on
@@ -117,6 +134,7 @@ finance_tracker/
   prices.py                 live prices (Yahoo Finance) with an offline cache
   reports.py                monthly stats, net-worth math (pure functions)
   api.py                    REST API for the web dashboard (FastAPI)
+  auth.py                   passcode hashing, sessions, lockout
   analyst.py                AI reviews: fact sheet + Ollama client
   assistant.py              AI questions: lookup tools, the tool loop, number check
   importer.py               CSV import: column guessing, parsing, duplicate detection
@@ -134,8 +152,12 @@ legacy/main_v1.py           the original single-file version
 
 ### API endpoints
 
+Every endpoint except `/api/auth/...` requires a signed-in session.
+
 | Method | Path | |
 |---|---|---|
+| GET | `/api/auth/status` | is a passcode set? is this browser signed in? |
+| POST | `/api/auth/setup` · `/login` · `/logout` · `/change` | choose, sign in, lock, change the passcode |
 | GET / POST | `/api/profile` | your name / create profile |
 | GET | `/api/summary?month=` | spent, income, net for a month |
 | GET | `/api/months` | months with data |
@@ -289,8 +311,8 @@ paused. Stopping a rule keeps the transactions it already created.
     Transactions are grouped by day and can be searched.
   - On phones, an iOS-style tab bar replaces the top navigation, and **+ Add**
     opens a sheet.
-  - Every color is a CSS variable in `styles.css`. The app icon is drawn by
-    `frontend/scripts/make_icons.py`.
+  - Every color is a CSS variable in `styles.css`. The app icon, a white "$" on
+    Apple blue, is drawn by `frontend/scripts/make_icons.py`.
 - **Editing:** click any transaction or holding to edit it in a sheet, which
   also holds Delete or Remove. When you change a transaction's category, the
   sheet offers to move every other transaction with the same description, which
@@ -317,8 +339,9 @@ paused. Stopping a rule keeps the transactions it already created.
 - [x] Phase 4: web dashboard (React + FastAPI) with charts
 - [x] Phase 5: AI analyst, with monthly reviews from a local model on your own PC
 - [x] Ask questions about your money, answered from exact lookups
-- [ ] Next: a login before phone or Raspberry Pi access, and Wake-on-LAN to
-  turn the PC on from the app
+- [x] Passcode lock, and phone access over Tailscale
+- [ ] Next: Wake-on-LAN to turn the PC on from the app, and moving to an
+  always-on Raspberry Pi
 
 Ideas not built yet: budgets per category, cost basis and gain/loss for investments, liabilities (loans, credit
 cards), and non-USD holdings.

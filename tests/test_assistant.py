@@ -16,6 +16,7 @@ try:
 except ImportError:
     TestClient = None
 
+from tests.support import sign_in
 from tests.test_prices import FakeProvider
 
 TODAY = date(2026, 11, 22)
@@ -203,6 +204,7 @@ class AskApiTests(unittest.TestCase):
             app = create_app(os.path.join(folder, "f.db"), provider=FakeProvider({}),
                              today=lambda: TODAY, static_dir=None, ai_client_factory=FakeAI)
             with TestClient(app) as client:
+                sign_in(client)
                 self.assertEqual(client.post("/api/ai/ask", json={"question": "hi"}).status_code, 400)  # not set up
                 client.put("/api/settings", json={"ai_url": "http://pc:11434"})
                 reply = client.post("/api/ai/ask", json={

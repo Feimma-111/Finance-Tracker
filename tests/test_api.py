@@ -12,6 +12,7 @@ try:
 except ImportError:  # web packages not installed; the terminal app still works
     TestClient = None
 
+from tests.support import sign_in
 from tests.test_prices import FakeProvider
 
 TODAY = date(2026, 11, 22)
@@ -29,6 +30,7 @@ class ApiTests(unittest.TestCase):
             static_dir=None,
         )
         self.client = TestClient(app)
+        sign_in(self.client)
 
     def tearDown(self):
         self.client.close()
@@ -248,6 +250,7 @@ class ApiTests(unittest.TestCase):
             static_dir=None,
         )
         with TestClient(app) as client:
+            sign_in(client)
             client.post("/api/recurring", json={
                 "description": "Spotify", "amount": "11.99", "category": "Subscriptions",
                 "frequency": "monthly", "start_on": "2026-12-05",

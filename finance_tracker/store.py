@@ -119,7 +119,18 @@ CREATE TABLE ai_reviews (
 CREATE INDEX ai_reviews_by_month ON ai_reviews (month, created_at);
 """
 
-MIGRATIONS: Tuple[str, ...] = (SCHEMA_V1, SCHEMA_V2, SCHEMA_V3)
+# Version 4: signed-in devices for the passcode lock. Only a SHA-256 of each
+# session token is stored, never the token itself.
+SCHEMA_V4 = """
+CREATE TABLE sessions (
+    token_hash  TEXT PRIMARY KEY,
+    created_at  TEXT NOT NULL,
+    last_seen   TEXT NOT NULL,
+    user_agent  TEXT
+);
+"""
+
+MIGRATIONS: Tuple[str, ...] = (SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4)
 
 # Safety valve: never create more than this many transactions in one catch-up.
 MAX_CATCH_UP = 1000
@@ -198,6 +209,69 @@ class Store:
         existing = [self.find_category(n) for n in names if isinstance(n, str)]
         note = self.get_setting("covered_note", "") or "Paid by someone else"
         return [n for n in existing if n], note
+
+    # ------------------------------------------------------------- passcode
+
+    def passcode_hash(self) -> Optional[str]:
+        return self.get_meta("passcode_hash")
+
+    def set_passcode_hash(self, value: str) -> None:
+        self.set_meta("passcode_hash", value)
+
+    def clear_passcode(self) -> None:
+        """Forget the passcode and sign out every device (for a forgotten passcode)."""
+        with self.conn:
+            self.conn.execute("DELETE FROM meta WHERE key IN ('passcode_hash', 'auth_failures', 'auth_locked_until')")
+            self.conn.execute("DELETE FROM sessions")
+
+    def auth_failures(self) -> Tuple[int, Optional[datetime]]:
+        """(wrong guesses in a row, locked until)."""
+        locked = self.get_meta("auth_locked_until")
+        return int(self.get_meta("auth_failures") or 0), datetime.fromisoformat(locked) if locked else None
+
+    def set_auth_failures(self, count: int, locked_until: Optional[datetime]) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM meta WHERE key IN ('auth_failures', 'auth_locked_until')")
+            if count:
+                self.conn.execute("INSERT INTO meta (key, value) VALUES ('auth_failures', ?)", (str(count),))
+            if locked_until:
+                self.conn.execute("INSERT INTO meta (key, value) VALUES ('auth_locked_until', ?)",
+                                  (locked_until.isoformat(),))
+
+    def add_session(self, token_hash: str, user_agent: str) -> None:
+        now = _utc_now()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO sessions (token_hash, created_at, last_seen, user_agent) VALUES (?, ?, ?, ?)",
+                (token_hash, now, now, user_agent[:200]),
+            )
+
+    def check_session(self, token_hash: str, *, max_idle_days: int) -> bool:
+        """True if the session exists and was used recently; refreshes its last-seen time."""
+        row = self.conn.execute("SELECT last_seen FROM sessions WHERE token_hash = ?", (token_hash,)).fetchone()
+        if not row:
+            return False
+        now = datetime.now(timezone.utc)
+        last_seen = datetime.fromisoformat(row["last_seen"])
+        if (now - last_seen).days >= max_idle_days:
+            self.delete_session(token_hash)
+            return False
+        if (now - last_seen).total_seconds() > 60:  # don't write on every single request
+            with self.conn:
+                self.conn.execute("UPDATE sessions SET last_seen = ? WHERE token_hash = ?", (_utc_now(), token_hash))
+        return True
+
+    def delete_session(self, token_hash: str) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+
+    def delete_other_sessions(self, keep_token_hash: str) -> int:
+        with self.conn:
+            cursor = self.conn.execute("DELETE FROM sessions WHERE token_hash != ?", (keep_token_hash,))
+        return cursor.rowcount
+
+    def session_count(self) -> int:
+        return self.conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
 
     def get_meta(self, key: str) -> Optional[str]:
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()

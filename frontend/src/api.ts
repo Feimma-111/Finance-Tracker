@@ -209,6 +209,13 @@ export class ApiError extends Error {
   }
 }
 
+export const LOCKED_EVENT = "finance-tracker:locked";
+
+export interface AuthStatus {
+  passcode_set: boolean;
+  signed_in: boolean;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
@@ -218,6 +225,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     });
   } catch {
     throw new Error("Can't reach the server. Is `python main.py --web` running?");
+  }
+  if (response.status === 401 && !path.startsWith("/api/auth/")) {
+    // Signed out (session expired, or locked from another tab): show the lock screen.
+    window.dispatchEvent(new Event(LOCKED_EVENT));
   }
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;
@@ -251,6 +262,13 @@ function query(params: Record<string, string | undefined | null>): string {
 const json = (method: string, body: unknown): RequestInit => ({ method, body: JSON.stringify(body) });
 
 export const api = {
+  authStatus: () => request<AuthStatus>("/api/auth/status"),
+  setupPasscode: (passcode: string) => request<AuthStatus>("/api/auth/setup", json("POST", { passcode })),
+  login: (passcode: string) => request<AuthStatus>("/api/auth/login", json("POST", { passcode })),
+  logout: () => request<{ signed_in: boolean }>("/api/auth/logout", { method: "POST" }),
+  changePasscode: (current: string, next: string) =>
+    request<{ changed: boolean; signed_out_devices: number }>("/api/auth/change", json("POST", { current, new: next })),
+
   profile: () => request<{ name: string | null }>("/api/profile"),
   createProfile: (name: string) => request<{ name: string }>("/api/profile", json("POST", { name })),
   renameProfile: (name: string) => request<{ name: string }>("/api/profile", json("PUT", { name })),

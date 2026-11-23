@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api, type Settings as SettingsData } from "./api";
+import { api, LOCKED_EVENT, type Settings as SettingsData } from "./api";
 import { TransactionForm } from "./components/forms";
+import { PasscodeScreen } from "./components/Passcode";
 import { Sheet } from "./components/Sheet";
 import { applyTheme, useAsync, type ThemeChoice } from "./hooks";
 import { TabIcons } from "./icons";
@@ -29,7 +30,39 @@ function pageFromHash(): Page {
   return PAGES.some((p) => p.id === id) ? (id as Page) : "dashboard";
 }
 
+/**
+ * The passcode gate. Nothing below it (and none of your data) loads until this
+ * browser is signed in; if it gets signed out (session expired, "Lock" pressed),
+ * MainApp is removed and the lock screen comes back.
+ */
 export default function App() {
+  const [authVersion, setAuthVersion] = useState(0);
+  const status = useAsync(api.authStatus, [authVersion]);
+  const recheck = () => setAuthVersion((v) => v + 1);
+
+  useEffect(() => {
+    window.addEventListener(LOCKED_EVENT, recheck);
+    return () => window.removeEventListener(LOCKED_EVENT, recheck);
+  }, []);
+
+  if (status.error && !status.data) {
+    return (
+      <div className="center-screen">
+        <div className="card welcome">
+          <h1>Can't reach the server</h1>
+          <p>{status.error}</p>
+          <p className="hint">Start it on your Mac with <strong>Finance Tracker.command</strong>, then reload.</p>
+        </div>
+      </div>
+    );
+  }
+  if (!status.data) return <div className="center-screen subtle">Loading…</div>;
+  if (!status.data.passcode_set) return <PasscodeScreen mode="setup" onDone={recheck} />;
+  if (!status.data.signed_in) return <PasscodeScreen mode="unlock" onDone={recheck} />;
+  return <MainApp />;
+}
+
+function MainApp() {
   const [page, setPage] = useState<Page>(pageFromHash);
   const [profileVersion, setProfileVersion] = useState(0);
   // Bumped after any change (new transaction, edited holding...). Every screen
@@ -84,7 +117,7 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">$</span>
+          <img className="brand-mark" src="/icon-192.png" alt="" width={28} height={28} />
           Finance Tracker
         </div>
         <nav className="nav" aria-label="Main">

@@ -26,6 +26,7 @@ try:
 except ImportError:
     TestClient = None
 
+from tests.support import sign_in
 from tests.test_prices import FakeProvider
 
 TODAY = date(2026, 11, 22)
@@ -163,6 +164,7 @@ class AnalystApiTests(unittest.TestCase):
             ai_client_factory=FakeAI,
         )
         self.client = TestClient(app)
+        sign_in(self.client)
         self.client.post("/api/transactions", json={
             "description": "Groceries", "amount": "50", "category": "Groceries", "occurred_on": "2026-11-03"})
 

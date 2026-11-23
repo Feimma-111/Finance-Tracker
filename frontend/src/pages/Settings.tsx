@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api, CSV_EXPORT_URL, type AiStatus, type Settings as SettingsData } from "../api";
+import { api, CSV_EXPORT_URL, LOCKED_EVENT, type AiStatus, type Settings as SettingsData } from "../api";
 import { CsvImport } from "../components/CsvImport";
 import { useAsync, type ThemeChoice } from "../hooks";
 
@@ -81,6 +81,86 @@ function AiSettings({ settings, onSaved }: { settings: SettingsData; onSaved: (s
           </span>
         )
       )}
+    </section>
+  );
+}
+
+/** Change the passcode, or lock this device now. */
+function PasscodeSettings() {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const digitsOnly = (value: string) => value.replace(/[^0-9]/g, "").slice(0, 6);
+
+  async function change(event: FormEvent) {
+    event.preventDefault();
+    if (next !== confirm) {
+      setMessage({ text: "The new passcodes don't match.", error: true });
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await api.changePasscode(current, next);
+      const others = result.signed_out_devices;
+      setMessage({
+        text: `Passcode changed.${others ? ` Signed out ${others} other device${others === 1 ? "" : "s"}.` : ""}`,
+        error: false,
+      });
+      setCurrent("");
+      setNext("");
+      setConfirm("");
+    } catch (e) {
+      setMessage({ text: (e as Error).message, error: true });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function lockNow() {
+    await api.logout().catch(() => {});
+    window.dispatchEvent(new Event(LOCKED_EVENT));
+  }
+
+  const passcodeField = (label: string, value: string, set: (v: string) => void, autoComplete: string) => (
+    <label className="field">
+      <span>{label}</span>
+      <input
+        type="password"
+        inputMode="numeric"
+        autoComplete={autoComplete}
+        maxLength={6}
+        value={value}
+        onChange={(e) => set(digitsOnly(e.target.value))}
+        required
+        minLength={6}
+      />
+    </label>
+  );
+
+  return (
+    <section className="setting-row">
+      <h3>Passcode</h3>
+      <span className="hint">
+        Each device asks for your 6-digit passcode, then stays signed in for 30 days. Forgot it? On the Mac, run{" "}
+        <code>.venv/bin/python main.py --reset-passcode</code> and you'll choose a new one.
+      </span>
+      <form className="form" onSubmit={change} style={{ maxWidth: 420 }}>
+        {passcodeField("Current passcode", current, setCurrent, "current-password")}
+        <div className="field-row">
+          {passcodeField("New passcode", next, setNext, "new-password")}
+          {passcodeField("Confirm new", confirm, setConfirm, "new-password")}
+        </div>
+        <div className="inline-form">
+          <button className="btn" type="submit" disabled={busy || current.length < 6 || next.length < 6}>
+            Change passcode
+          </button>
+          <button className="btn btn-danger" type="button" onClick={lockNow}>Lock now</button>
+        </div>
+        {message && <span className={`message ${message.error ? "error" : "success"}`}>{message.text}</span>}
+        <span className="hint">Changing it signs out your other devices.</span>
+      </form>
     </section>
   );
 }
@@ -198,6 +278,8 @@ export function Settings({
           </div>
           <span className="hint">"Match system" follows your device's light or dark mode.</span>
         </section>
+
+        <PasscodeSettings />
 
         <section className="setting-row">
           <h3>Your name</h3>

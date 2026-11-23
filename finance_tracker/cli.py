@@ -538,7 +538,18 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     )
     parser.add_argument("--port", type=int, default=8000, help="port for --web (default: 8000)")
     parser.add_argument("--open", action="store_true", help="with --web, open the dashboard in your browser")
+    parser.add_argument(
+        "--reset-passcode",
+        action="store_true",
+        help="forget the web app's passcode and sign out every device (you'll choose a new one next time)",
+    )
     args = parser.parse_args(argv)
+
+    if args.reset_passcode:
+        with Store(args.db) as store:
+            store.clear_passcode()
+        print("Passcode cleared and every device signed out. The web app will ask for a new one.")
+        return
 
     if args.web:
         try:

@@ -17,6 +17,7 @@ try:
 except ImportError:
     TestClient = None
 
+from tests.support import sign_in
 from tests.test_prices import FakeProvider
 
 TODAY = date(2026, 11, 22)
@@ -193,6 +194,7 @@ class ImportApiTests(unittest.TestCase):
             app = create_app(os.path.join(folder, "f.db"), provider=FakeProvider({}),
                              today=lambda: TODAY, static_dir=None)
             with TestClient(app) as client:
+                sign_in(client)
                 first = client.post("/api/import/preview", json={"csv": BANK}).json()
                 self.assertEqual(first["mapping"]["amount"], "Amount")
                 self.assertEqual(first["ready"], 3)
