@@ -53,6 +53,8 @@ PUT    /api/profile                  rename
 GET    /api/ai/status                is the PC with Ollama reachable? which models?
 GET    /api/ai/reviews/{month}       the last saved AI review for a month
 POST   /api/ai/reviews/{month}       generate a new review on the PC
+POST   /api/ai/focus                 review only the chosen categories (not saved)
+GET    /api/ai/changed               when the data reviews are based on last changed
 POST   /api/ai/ask                   answer a question (the model uses lookup tools)
 
 Recurring transactions are caught up at the start of *every* request, so
@@ -78,7 +80,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import auth, backup, importer, reports
-from .analyst import AIError, AIUnavailable, OllamaClient, month_facts, normalize_url, pick_model
+from .analyst import AIError, AIUnavailable, OllamaClient, focus_facts, month_facts, normalize_url, pick_model
 from .assistant import ask
 from .models import (
     GOLD_SYMBOL,
@@ -183,6 +185,11 @@ class ChatTurn(BaseModel):
 class QuestionIn(BaseModel):
     question: str = Field(min_length=1, max_length=500)
     history: List[ChatTurn] = Field(default_factory=list, max_length=20)
+
+
+class FocusIn(BaseModel):
+    month: Optional[str] = Field(None, description="YYYY-MM; defaults to this month")
+    categories: List[str] = Field(min_length=1, max_length=30)
 
 
 class ImportMapping(BaseModel):
@@ -490,6 +497,50 @@ def create_app(
         except AIError as exc:
             raise HTTPException(502, f"The model had a problem: {exc}") from None
         return store.save_review(month, model, review.to_dict(), facts)
+
+    @app.post("/api/ai/focus")
+    def focus_review(body: FocusIn, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """Have the model look at only the chosen categories for a month.
+
+        Not saved: like the question chat, the dashboard keeps it for the
+        browser session. ``created_at`` lets it notice when data changes after.
+        """
+        month = _month_or_400(body.month) or month_of(today())
+        names: List[str] = []
+        unknown: List[str] = []
+        for raw in body.categories:
+            name = store.find_category(raw)
+            if name is None:
+                unknown.append(raw)
+            elif name not in names:
+                names.append(name)
+        if unknown:
+            raise HTTPException(400, f"no category called {', '.join(repr(c) for c in unknown)}")
+        client = ai_client(store)
+        try:
+            model = pick_model(client.models(), store.get_setting("ai_model", ""))
+            if model is None:
+                raise HTTPException(409, "Ollama has no models installed. On the PC, run: ollama pull qwen3:14b")
+            facts = focus_facts(store, month, names, today())
+            review = client.review(model, facts, focus=True)
+        except AIUnavailable:
+            raise HTTPException(503, "Your PC is offline, or Ollama isn't running on it.") from None
+        except AIError as exc:
+            raise HTTPException(502, f"The model had a problem: {exc}") from None
+        return {
+            "month": month,
+            "categories": names,
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+            "model": model,
+            "review": review.to_dict(),
+            "facts": facts,
+        }
+
+    @app.get("/api/ai/changed")
+    def facts_changed(store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """When transactions or covered expenses last changed (for 'out of date' notes)."""
+        changed = store.facts_changed_at()
+        return {"changed_at": changed.isoformat(timespec="microseconds") if changed else None}
 
     @app.post("/api/ai/ask")
     def ask_question(body: QuestionIn, store: Store = Depends(get_store)) -> Dict[str, Any]:

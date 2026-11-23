@@ -2,15 +2,17 @@ import { useState } from "react";
 import { api, type CategoryReport, type Pace } from "../api";
 import { AiReview } from "../components/AiReview";
 import { Allocation, CategoryBars, CategoryDonut, MonthlyChart, NetWorthChart, PaceChart } from "../components/charts";
+import { FocusReview, listNames } from "../components/FocusReview";
 import { TransactionList } from "../components/TransactionList";
 import { Upcoming } from "../components/Upcoming";
-import { currentMonth, dateLabel, money, monthLabel, signedMoney } from "../format";
+import { currentMonth, dateLabel, money, monthLabel, percent, signedMoney } from "../format";
 import { useAsync } from "../hooks";
 
 /**
  * Home screen, laid out like Rocket Money: this month's spending and how it's
  * pacing against last month first, then net worth and upcoming bills, the AI
- * analyst, where the money went, and recent transactions.
+ * analyst, where the money went (narrowed to chosen categories if you like,
+ * with the AI on just those), and recent transactions.
  */
 export function Dashboard({ version, onChanged }: { version: number; onChanged: () => void }) {
   const [month, setMonth] = useState(currentMonth());
@@ -25,10 +27,26 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
   // For the donut: all-time ranking (which category owns which color) and covered expenses.
   const allTime = useAsync(() => api.categoryReport(null), [version]);
   const settings = useAsync(api.settings, [version]);
+  // Checked once and shared by both AI panels (each check can take ~3 s when the PC is off).
+  const ai = useAsync(api.aiStatus, []);
 
   const [chart, setChart] = useState<"pie" | "bars">(() => remembered("category-chart", "pie") as "pie" | "bars");
   const [hideCovered, setHideCovered] = useState(() => remembered("hide-covered", "no") === "yes");
   const covered = settings.data?.covered_categories ?? [];
+
+  // Chosen categories, in all-time order (biggest first) so they never jump
+  // around between months. Names that no longer exist are dropped.
+  const [picked, setPicked] = useState<string[]>(() => rememberedList("category-focus"));
+  const allCategories = allTime.data?.items.map((i) => i.category);
+  const focus = allCategories
+    ? allCategories.filter((c) => picked.some((p) => p.toLowerCase() === c.toLowerCase()))
+    : picked;
+  const choose = (next: string[]) => {
+    setPicked(next);
+    remember("category-focus", JSON.stringify(next));
+  };
+  const toggleCategory = (name: string) =>
+    choose(focus.includes(name) ? focus.filter((c) => c !== name) : [...focus, name]);
 
   const monthOptions = months.data ?? [month];
 
@@ -102,72 +120,104 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
       </section>
 
       <section style={{ marginTop: 16 }}>
-        <AiReview month={month} version={version} />
+        <AiReview month={month} version={version} status={ai} />
       </section>
 
-      <section className="grid grid-2" style={{ marginTop: 16 }}>
-        <div className={`card ${categories.loading && categories.data ? "refreshing" : ""}`}>
-          <div className="card-head">
-            <h2 className="card-title">Spending by category</h2>
-            <div className="card-action">
-              <div className="segmented" role="group" aria-label="Chart type">
-                {(["pie", "bars"] as const).map((kind) => (
-                  <button
-                    key={kind}
-                    type="button"
-                    aria-pressed={chart === kind}
-                    onClick={() => {
-                      setChart(kind);
-                      remember("category-chart", kind);
-                    }}
-                  >
-                    {kind === "pie" ? "Pie" : "Bars"}
-                  </button>
-                ))}
-              </div>
+      <section className={`card ${categories.loading && categories.data ? "refreshing" : ""}`} style={{ marginTop: 16 }}>
+        <div className="card-head">
+          <h2 className="card-title">Spending by category</h2>
+          <span className="card-subtitle">
+            {focus.length ? `${focus.length} of ${allCategories?.length ?? "…"} categories` : "All categories"}
+          </span>
+          <div className="card-action">
+            <div className="segmented" role="group" aria-label="Chart type">
+              {(["pie", "bars"] as const).map((kind) => (
+                <button
+                  key={kind}
+                  type="button"
+                  aria-pressed={chart === kind}
+                  onClick={() => {
+                    setChart(kind);
+                    remember("category-chart", kind);
+                  }}
+                >
+                  {kind === "pie" ? "Pie" : "Bars"}
+                </button>
+              ))}
             </div>
           </div>
-          {covered.length > 0 && (
-            <label className="check-row" style={{ marginBottom: 12 }}>
-              <input
-                type="checkbox"
-                checked={hideCovered}
-                onChange={(e) => {
-                  setHideCovered(e.target.checked);
-                  remember("hide-covered", e.target.checked ? "yes" : "no");
-                }}
-              />
-              Hide covered expenses ({covered.join(", ")})
-            </label>
-          )}
-          {categories.error && <p className="message error">{categories.error}</p>}
-          {categories.data && (chart === "pie" ? (
-            <CategoryDonut
-              report={categories.data}
-              colorOrder={allTime.data?.items.map((i) => i.category) ?? []}
-              covered={covered}
-              coveredLabel="Covered"
-              hideCovered={hideCovered}
-            />
-          ) : (
-            <CategoryBars report={hideCovered ? withoutCovered(categories.data, covered) : categories.data} />
-          ))}
         </div>
-        <div className={`card ${monthly.loading && monthly.data ? "refreshing" : ""}`}>
-          <div className="card-head">
-            <h2 className="card-title">Monthly spending</h2>
-            <span className="card-subtitle">Click a month to see it</span>
+        {allCategories && allCategories.length > 1 && (
+          <div className="focus-picker">
+            <div className="toggle-list" role="group" aria-label="Categories to show">
+              <label className={`toggle ${focus.length ? "" : "on"}`}>
+                <input type="checkbox" checked={!focus.length} onChange={() => choose([])} />
+                All
+              </label>
+              {allCategories.map((name) => (
+                <label key={name} className={`toggle ${focus.includes(name) ? "on" : ""}`}>
+                  <input type="checkbox" checked={focus.includes(name)} onChange={() => toggleCategory(name)} />
+                  {name}
+                </label>
+              ))}
+            </div>
           </div>
-          {monthly.error && <p className="message error">{monthly.error}</p>}
-          {monthly.data && (
-            <MonthlyChart
-              months={monthly.data.months}
-              meanCents={monthly.data.mean_cents}
-              selected={month}
-              onSelect={setMonth}
-            />
-          )}
+        )}
+        <div className="category-layout">
+          <div>
+            {focus.length > 0 && categories.data && <FocusTotal report={categories.data} focus={focus} month={month} />}
+            {!focus.length && covered.length > 0 && (
+              <label className="check-row" style={{ marginBottom: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={hideCovered}
+                  onChange={(e) => {
+                    setHideCovered(e.target.checked);
+                    remember("hide-covered", e.target.checked ? "yes" : "no");
+                  }}
+                />
+                Hide covered expenses ({covered.join(", ")})
+              </label>
+            )}
+            {categories.error && <p className="message error">{categories.error}</p>}
+            {categories.data && (chart === "pie" ? (
+              <CategoryDonut
+                report={categories.data}
+                colorOrder={allCategories ?? []}
+                covered={covered}
+                coveredLabel="Covered"
+                hideCovered={hideCovered}
+                focus={focus}
+              />
+            ) : (
+              <CategoryBars
+                report={
+                  focus.length ? onlyThese(categories.data, focus)
+                  : hideCovered ? withoutCovered(categories.data, covered)
+                  : categories.data
+                }
+                emptyNote={focus.length ? "No spending in these categories this month." : undefined}
+              />
+            ))}
+          </div>
+          <FocusReview month={month} categories={focus} status={ai} version={version} />
         </div>
+      </section>
+
+      <section className={`card ${monthly.loading && monthly.data ? "refreshing" : ""}`} style={{ marginTop: 16 }}>
+        <div className="card-head">
+          <h2 className="card-title">Monthly spending</h2>
+          <span className="card-subtitle">Click a month to see it</span>
+        </div>
+        {monthly.error && <p className="message error">{monthly.error}</p>}
+        {monthly.data && (
+          <MonthlyChart
+            months={monthly.data.months}
+            meanCents={monthly.data.mean_cents}
+            selected={month}
+            onSelect={setMonth}
+          />
+        )}
       </section>
 
       <section className="card" style={{ marginTop: 16 }}>
@@ -220,6 +270,28 @@ function SpendHero({ pace }: { pace: Pace }) {
   );
 }
 
+/** "$70.00 on Food and Transport in November 2026, 17% of everything you spent." */
+function FocusTotal({ report, focus, month }: { report: CategoryReport; focus: string[]; month: string }) {
+  const total = onlyThese(report, focus).total_cents;
+  const names = focus.length > 3 ? `these ${focus.length} categories` : listNames(focus);
+  return (
+    <p className="focus-total">
+      <strong>{money(total)}</strong> on {names} in {monthLabel(month)}
+      {report.total_cents > 0 && `, ${percent(total / report.total_cents)} of everything you spent`}.
+    </p>
+  );
+}
+
+/** Just the chosen categories (including ones with $0 this month), shares out of their total. */
+function onlyThese(report: CategoryReport, focus: string[]): CategoryReport {
+  const byName = new Map(report.items.map((i) => [i.category.toLowerCase(), i.total_cents]));
+  const rows = focus
+    .map((category) => ({ category, total_cents: byName.get(category.toLowerCase()) ?? 0 }))
+    .sort((a, b) => b.total_cents - a.total_cents); // stable: ties keep all-time order
+  const total = rows.reduce((sum, r) => sum + r.total_cents, 0);
+  return { ...report, total_cents: total, items: rows.map((r) => ({ ...r, share: total ? r.total_cents / total : 0 })) };
+}
+
 /** The category report minus covered categories (shares recomputed for display). */
 function withoutCovered(report: CategoryReport, covered: string[]): CategoryReport {
   const hidden = new Set(covered.map((c) => c.toLowerCase()));
@@ -235,6 +307,14 @@ function remembered(key: string, fallback: string): string {
     return localStorage.getItem(`finance-tracker:${key}`) ?? fallback;
   } catch {
     return fallback;
+  }
+}
+function rememberedList(key: string): string[] {
+  try {
+    const value = JSON.parse(remembered(key, "[]"));
+    return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
   }
 }
 function remember(key: string, value: string): void {

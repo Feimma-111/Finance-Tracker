@@ -96,13 +96,29 @@ export interface ImportResult {
   errors: string[];
 }
 
+export interface ReviewText {
+  headline: string;
+  observations: string[];
+  suggestions: string[];
+}
+
 export interface SavedReview {
   month: string;
   created_at: string; // ISO timestamp, UTC
   model: string;
-  review: { headline: string; observations: string[]; suggestions: string[] };
+  review: ReviewText;
   facts: string; // exactly what the model was shown
   outdated?: boolean; // data or covered expenses changed after it was written
+}
+
+/** The AI's look at only the chosen categories (kept for the browser session, not saved). */
+export interface FocusResult {
+  month: string;
+  categories: string[];
+  created_at: string; // ISO timestamp, UTC
+  model: string;
+  review: ReviewText;
+  facts: string;
 }
 
 export interface Summary {
@@ -285,6 +301,9 @@ export const api = {
   aiStatus: () => request<AiStatus>("/api/ai/status"),
   savedReview: (month: string) => request<{ saved: SavedReview | null }>(`/api/ai/reviews/${month}`),
   createReview: (month: string) => request<SavedReview>(`/api/ai/reviews/${month}`, { method: "POST" }),
+  focusReview: (month: string, categories: string[]) =>
+    request<FocusResult>("/api/ai/focus", json("POST", { month, categories })),
+  aiChanged: () => request<{ changed_at: string | null }>("/api/ai/changed"),
   ask: (question: string, history: ChatTurn[]) => request<AskResult>("/api/ai/ask", json("POST", { question, history })),
 
   recurring: () => request<RecurringRule[]>("/api/recurring"),

@@ -272,8 +272,10 @@ export function PaceChart({ pace }: { pace: Pace }) {
 
 const MAX_CATEGORY_ROWS = 8;
 
-export function CategoryBars({ report }: { report: CategoryReport }) {
-  if (!report.items.length) return <p className="chart-note">No spending recorded for this period.</p>;
+export function CategoryBars({ report, emptyNote }: { report: CategoryReport; emptyNote?: string }) {
+  if (!report.items.length || !report.total_cents) {
+    return <p className="chart-note">{emptyNote ?? "No spending recorded for this period."}</p>;
+  }
 
   let items = report.items;
   if (items.length > MAX_CATEGORY_ROWS) {
@@ -296,7 +298,11 @@ export function CategoryBars({ report }: { report: CategoryReport }) {
             <span>{item.category}</span>
           </span>
           <span className="track" aria-hidden="true">
-            <span className="fill" style={{ width: `${(item.total_cents / largest) * 100}%` }} />
+            {/* The 3px minimum keeps tiny amounts visible; $0 gets no bar at all. */}
+            <span
+              className="fill"
+              style={{ width: `${(item.total_cents / largest) * 100}%`, minWidth: item.total_cents > 0 ? undefined : 0 }}
+            />
           </span>
           <span className="value">{money(item.total_cents)}</span>
           <span className="share">{percent(item.share)}</span>
@@ -354,11 +360,22 @@ export interface Slice {
   color: string; // a CSS color or var(--...)
 }
 
-export function Donut({ slices, centerLabel }: { slices: Slice[]; centerLabel: string }) {
+export function Donut({
+  slices,
+  centerLabel,
+  listEmpty = false,
+  emptyNote = "Nothing to show for this period.",
+}: {
+  slices: Slice[];
+  centerLabel: string;
+  listEmpty?: boolean; // keep $0 slices in the legend (chosen categories with nothing this month)
+  emptyNote?: string;
+}) {
   const t = useChartTheme();
   const total = slices.reduce((sum, s) => sum + Math.max(s.value_cents, 0), 0);
-  if (!total) return <p className="chart-note">Nothing to show for this period.</p>;
+  if (!total) return <p className="chart-note">{emptyNote}</p>;
   const visible = slices.filter((s) => s.value_cents > 0);
+  const listed = listEmpty ? slices : visible;
 
   return (
     <div className="donut-layout">
@@ -399,7 +416,7 @@ export function Donut({ slices, centerLabel }: { slices: Slice[]; centerLabel: s
         </div>
       </div>
       <ul className="legend">
-        {visible.map((s) => (
+        {listed.map((s) => (
           <li key={s.key}>
             <span className="swatch" style={{ background: s.color }} />
             <span>{s.label}</span>
@@ -435,16 +452,28 @@ export function CategoryDonut({
   covered,
   coveredLabel,
   hideCovered,
+  focus = [],
 }: {
   report: CategoryReport;
   colorOrder: string[];
   covered: string[];
   coveredLabel: string;
   hideCovered: boolean;
+  focus?: string[]; // chosen categories, biggest of all time first; empty = everything
 }) {
   const isCovered = new Set(covered.map((c) => c.toLowerCase()));
-  const colored = colorOrder.filter((c) => !isCovered.has(c.toLowerCase())).slice(0, 5);
   const byName = new Map(report.items.map((i) => [i.category.toLowerCase(), i.total_cents]));
+  if (focus.length) {
+    return (
+      <Donut
+        slices={focusSlices(focus, byName, isCovered)}
+        centerLabel="Chosen"
+        listEmpty
+        emptyNote="No spending in these categories this month."
+      />
+    );
+  }
+  const colored = colorOrder.filter((c) => !isCovered.has(c.toLowerCase())).slice(0, 5);
 
   const slices: Slice[] = colored.map((name, i) => ({
     key: name,
@@ -465,6 +494,41 @@ export function CategoryDonut({
     slices.push({ key: "__covered", label: coveredLabel, value_cents: coveredTotal, color: "var(--covered)" });
   }
   return <Donut slices={slices} centerLabel="Spent" />;
+}
+
+/**
+ * Slices for just the chosen categories. Colors go by position (first chosen
+ * = series 1, next = series 2, ...), NOT each category's color in the full
+ * chart: the palette was checked for colorblind safety only between
+ * neighboring slots, and a hand-picked subset of fixed colors can put two
+ * look-alikes (e.g. orange and yellow) side by side. Six colors at most, all
+ * neighbors that passed the check; anything beyond goes into a gray "Other".
+ * Categories with nothing this month aren't in the ring (they'd leave a gap
+ * between two unchecked neighbors), so they get no color, just a $0 legend row.
+ */
+const FOCUS_COLORS = 6;
+
+function focusSlices(focus: string[], byName: Map<string, number>, isCovered: Set<string>): Slice[] {
+  const value = (name: string) => byName.get(name.toLowerCase()) ?? 0;
+  const label = (name: string) => (isCovered.has(name.toLowerCase()) ? `${name} (covered)` : name);
+  const spent = focus.filter((name) => value(name) > 0);
+  const colored = spent.slice(0, FOCUS_COLORS);
+  const rest = spent.slice(FOCUS_COLORS);
+  const slices: Slice[] = colored.map((name, i) => ({
+    key: name, label: label(name), value_cents: value(name), color: seriesVar(i + 1),
+  }));
+  if (rest.length) {
+    slices.push({
+      key: "__other",
+      label: `Other (${rest.join(", ")})`,
+      value_cents: rest.reduce((sum, name) => sum + value(name), 0),
+      color: "var(--other)",
+    });
+  }
+  for (const name of focus.filter((n) => value(n) <= 0)) {
+    slices.push({ key: name, label: label(name), value_cents: 0, color: "var(--fill-strong)" });
+  }
+  return slices;
 }
 
 /* ------------------------------------------------------------------ table twin for charts */

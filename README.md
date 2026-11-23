@@ -282,6 +282,19 @@ is kept in the browser's session storage, so it survives switching tabs, pages,
 and reloads, and it's gone when the browser tab closes. It's never written to the
 database.
 
+**Look at just some categories.** In **Spending by category**, tick categories
+such as Food and Transport. The pie or bars then show only those, with their
+total and share of the month. The panel beside the chart, **AI on these
+categories**, looks at only the ticked ones. It names the purchases that drove
+the spending (for example, "3 boba runs, $87.81"), describes the trend, and
+gives ideas for those purchases. Its fact sheet (`focus_facts` in
+`analyst.py`) contains nothing about the other categories, so the model can't
+wander into reviewing the whole month. Comparisons such as "higher than any of
+the previous 6 months" or "up 2 months in a row" are worked out in Python too,
+because in testing the model misread rows of monthly numbers. Like the chat,
+these analyses are kept for the browser session only. Your ticked categories
+are remembered on each device.
+
 **Expenses someone else covers.** In **Settings → Covered by someone else**, tick
 categories you don't pay for yourself, such as rent or tuition your parents
 cover, and say who covers them. These categories still count in your totals,
