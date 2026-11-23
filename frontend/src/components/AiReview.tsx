@@ -15,7 +15,22 @@ export function AiReview({ month }: { month: string }) {
   const [review, setReview] = useState<SavedReview | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<"review" | "ask">("review");
+  // Remember the open tab for this browser session, like the chat itself.
+  const [tab, setTabState] = useState<"review" | "ask">(() => {
+    try {
+      return sessionStorage.getItem("finance-tracker:ai-tab") === "ask" ? "ask" : "review";
+    } catch {
+      return "review";
+    }
+  });
+  const setTab = (next: "review" | "ask") => {
+    setTabState(next);
+    try {
+      sessionStorage.setItem("finance-tracker:ai-tab", next);
+    } catch {
+      // storage blocked; the tab just won't be remembered
+    }
+  };
 
   useEffect(() => {
     setReview(saved.data?.saved ?? null);

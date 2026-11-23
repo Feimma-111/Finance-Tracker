@@ -73,6 +73,20 @@ class FactSheetTests(unittest.TestCase):
         self.assertNotIn("Health: $0.00", facts)
         self.assertIn("previous 3 month(s)", facts)
 
+    def test_covered_categories_are_marked_and_excluded(self):
+        # Pretend parents pay for groceries: Nov $200 of $350 is covered.
+        self.store.set_setting("covered_categories", '["groceries"]')  # matched case-insensitively
+        self.store.set_setting("covered_note", "My parents pay for this")
+        facts = month_facts(self.store, "2026-11", TODAY)
+        self.assertIn("Covered by someone else (My parents pay for this): Groceries. "
+                      "$200.00 of this month's spending is covered.", facts)
+        self.assertIn("Spending you control (everything not covered): $150.00", facts)
+        # Sep: $400 - $400 groceries = $0; Oct: $350 - $300 = $50 -> average $25
+        self.assertIn("Average spending you control over those months: $25.00", facts)
+        self.assertIn("Spending you control compared with that average: $125.00 more (+500.0%)", facts)
+        self.assertIn("| $150.00 less (-42.9%) [covered: My parents pay for this]", facts)
+        self.assertIn("Groceries) $200.00 [covered]", facts)
+
     def test_first_month_has_no_comparison(self):
         facts = month_facts(self.store, "2026-09", TODAY)
         self.assertIn("(complete)", facts)
@@ -166,6 +180,10 @@ class AnalystApiTests(unittest.TestCase):
         self.assertEqual(saved["theme"], "system")  # untouched fields stay put
         self.assertEqual(self.client.put("/api/settings", json={"ai_url": "ftp://nope"}).status_code, 400)
         self.assertEqual(self.client.put("/api/settings", json={"ai_url": ""}).json()["ai_url"], "")
+        covered = self.client.put("/api/settings", json={
+            "covered_categories": ["groceries"], "covered_note": "Parents pay"}).json()
+        self.assertEqual((covered["covered_categories"], covered["covered_note"]), (["Groceries"], "Parents pay"))
+        self.assertEqual(self.client.put("/api/settings", json={"covered_categories": ["Nope"]}).status_code, 400)
 
     def test_generate_and_reread_review(self):
         self.client.put("/api/settings", json={"ai_url": "http://pc:11434", "ai_model": "llama3:latest"})

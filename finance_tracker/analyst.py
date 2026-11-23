@@ -43,6 +43,9 @@ written. Never do arithmetic or produce a number that isn't in the facts.
 just because the month isn't over.
 - Focus on spending patterns: which categories changed, unusual expenses, \
 recurring charges, and practical budgeting habits.
+- Anything marked [covered] is paid for by someone else. You may mention it \
+as context, but never suggest cutting it, and judge whether the month was high \
+or low using the "spending you control" figures, not the total.
 - Do not recommend specific investments, securities, or financial products.
 - Write in plain, encouraging language. Address the user as "you".
 """
@@ -102,18 +105,38 @@ def month_facts(store: Store, month: str, today: date) -> str:
         verb = "saved" if net >= 0 else "overspent by"
         lines.append(f"Net: {format_money(net)} ({verb} {abs(rate):.0f}% of income)")
 
+    # Expenses someone else pays for (e.g. rent and tuition covered by parents).
+    covered, note = store.covered_categories()
+    covered_set = set(covered)
+    tag = lambda name: f" [covered: {note}]" if name in covered_set else ""  # noqa: E731
+    covered_spent = sum(c for name, c in spent_rows if name in covered_set)
+    controlled = spent - covered_spent
+    if covered:
+        lines.append(
+            f"Covered by someone else ({note}): {', '.join(covered)}. "
+            f"{format_money(covered_spent)} of this month's spending is covered."
+        )
+        lines.append(f"Spending you control (everything not covered): {format_money(controlled)}")
+
     # Baseline: up to six previous months, but only since tracking began, so
     # months before the first transaction don't count as $0 spending.
     month_totals = dict(store.totals_by_month(Kind.EXPENSE))
     first = min(month_totals) if month_totals else month
     previous = [shift_month(month, -i) for i in range(1, BASELINE_MONTHS + 1)]
     previous = [m for m in previous if m >= first]
+    history = {m: dict(store.totals_by_category(Kind.EXPENSE, month=m)) for m in previous}
     if previous:
         avg = statistics.mean(month_totals.get(m, 0) for m in previous)
         lines.append(
             f"Average monthly spending over the previous {len(previous)} month(s): {format_money(round(avg))}"
         )
         lines.append(f"This month compared with that average: {_change(spent, avg)}")
+        if covered:
+            avg_controlled = statistics.mean(
+                month_totals.get(m, 0) - sum(history[m].get(n, 0) for n in covered) for m in previous
+            )
+            lines.append(f"Average spending you control over those months: {format_money(round(avg_controlled))}")
+            lines.append(f"Spending you control compared with that average: {_change(controlled, avg_controlled)}")
     else:
         lines.append("No earlier months to compare with yet.")
 
@@ -121,13 +144,13 @@ def month_facts(store: Store, month: str, today: date) -> str:
         lines.append("")
         if previous:
             lines.append("Spending by category (this month | previous average | change):")
-            history = {m: dict(store.totals_by_category(Kind.EXPENSE, month=m)) for m in previous}
             for name, cents in spent_rows:
                 cat_avg = statistics.mean(history[m].get(name, 0) for m in previous)
                 share = cents / spent * 100
                 lines.append(
                     f"- {name}: {format_money(cents)} ({share:.0f}% of spending) | "
                     f"{format_money(round(cat_avg))} | {_change(cents, cat_avg) if cat_avg else 'new this month'}"
+                    f"{tag(name)}"
                 )
             # Regular categories (spending in at least half of the previous
             # months) with nothing yet this month. One-offs like a single trip
@@ -138,11 +161,13 @@ def month_facts(store: Store, month: str, today: date) -> str:
                 months_with = sum(1 for m in previous if history[m].get(name))
                 cat_avg = statistics.mean(history[m].get(name, 0) for m in previous)
                 if months_with * 2 >= len(previous) and cat_avg >= 1000:  # and over $10/month
-                    lines.append(f"- {name}: $0.00 this month | {format_money(round(cat_avg))} | none yet")
+                    lines.append(
+                        f"- {name}: $0.00 this month | {format_money(round(cat_avg))} | none yet{tag(name)}"
+                    )
         else:
             lines.append("Spending by category:")
             for name, cents in spent_rows:
-                lines.append(f"- {name}: {format_money(cents)} ({cents / spent * 100:.0f}% of spending)")
+                lines.append(f"- {name}: {format_money(cents)} ({cents / spent * 100:.0f}% of spending){tag(name)}")
 
     expenses = [t for t in store.transactions(month=month) if t.kind is Kind.EXPENSE]
     if expenses:
@@ -150,14 +175,20 @@ def month_facts(store: Store, month: str, today: date) -> str:
         lines.append("")
         lines.append("Largest expenses:")
         for tx in biggest:
-            lines.append(f"- {tx.occurred_on:%b %d}: {tx.description} ({tx.category}) {format_money(tx.amount_cents)}")
+            lines.append(
+                f"- {tx.occurred_on:%b %d}: {tx.description} ({tx.category}) "
+                f"{format_money(tx.amount_cents)}{' [covered]' if tx.category in covered_set else ''}"
+            )
 
     rules = [r for r in store.recurring_rules() if r.active and r.kind is Kind.EXPENSE]
     if rules:
         lines.append("")
         lines.append("Active recurring expenses:")
         for rule in rules:
-            lines.append(f"- {rule.description} ({rule.category}): {format_money(rule.amount_cents)} {rule.frequency.value}")
+            lines.append(
+                f"- {rule.description} ({rule.category}): {format_money(rule.amount_cents)} "
+                f"{rule.frequency.value}{' [covered]' if rule.category in covered_set else ''}"
+            )
 
     history_points = store.net_worth_history()
     if history_points:

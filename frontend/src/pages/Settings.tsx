@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api, CSV_EXPORT_URL, type AiStatus, type Settings as SettingsData } from "../api";
 import { CsvImport } from "../components/CsvImport";
-import type { ThemeChoice } from "../hooks";
+import { useAsync, type ThemeChoice } from "../hooks";
 
 /** Where the AI analyst lives: Ollama's address on your PC, and which model to use. */
 function AiSettings({ settings, onSaved }: { settings: SettingsData; onSaved: (s: SettingsData) => void }) {
@@ -85,6 +85,64 @@ function AiSettings({ settings, onSaved }: { settings: SettingsData; onSaved: (s
   );
 }
 
+/** Categories someone else pays for, so the AI doesn't suggest cutting them. */
+function CoveredSettings({ settings, onSaved }: { settings: SettingsData; onSaved: (s: SettingsData) => void }) {
+  const categories = useAsync(() => api.categories("expense"), []);
+  const [note, setNote] = useState(settings.covered_note);
+  const [error, setError] = useState<string | null>(null);
+  const covered = new Set(settings.covered_categories);
+
+  async function save(patch: Partial<Pick<SettingsData, "covered_categories" | "covered_note">>) {
+    setError(null);
+    try {
+      onSaved(await api.saveSettings(patch));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  function toggle(name: string) {
+    const next = new Set(covered);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    save({ covered_categories: [...next] });
+  }
+
+  return (
+    <section className="setting-row">
+      <h3>Covered by someone else</h3>
+      <span className="hint">
+        Pick expenses you don't pay for yourself, like rent or tuition your parents cover. They still count in your
+        totals, but the AI won't suggest cutting them and judges your month on the spending you control.
+      </span>
+      {categories.data?.length ? (
+        <div className="toggle-list" role="group" aria-label="Covered categories">
+          {categories.data.map((name) => (
+            <label key={name} className={`toggle ${covered.has(name) ? "on" : ""}`}>
+              <input type="checkbox" checked={covered.has(name)} onChange={() => toggle(name)} />
+              {name}
+            </label>
+          ))}
+        </div>
+      ) : (
+        <span className="subtle">Your categories will show up here once you've added some transactions.</span>
+      )}
+      <label className="field" style={{ maxWidth: 380 }}>
+        <span>Who covers them?</span>
+        <input
+          type="text"
+          value={note}
+          placeholder="My parents pay for these"
+          maxLength={120}
+          onChange={(e) => setNote(e.target.value)}
+          onBlur={() => note !== settings.covered_note && save({ covered_note: note })}
+        />
+      </label>
+      {error && <span className="message error">{error}</span>}
+    </section>
+  );
+}
+
 const THEMES: { value: ThemeChoice; label: string }[] = [
   { value: "system", label: "Match system" },
   { value: "light", label: "Light" },
@@ -153,6 +211,7 @@ export function Settings({
         </section>
 
         {settings && <AiSettings settings={settings} onSaved={onSettings} />}
+        {settings && <CoveredSettings settings={settings} onSaved={onSettings} />}
 
         <CsvImport onImported={onDataChanged} />
 

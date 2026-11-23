@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { api, type AskResult, type ChatTurn } from "../api";
+import { clearChat, sendQuestion, useChat } from "../chatStore";
 
 const SUGGESTIONS = [
   "How much did I spend on food since August?",
@@ -22,39 +22,36 @@ const TOOL_LABELS: Record<string, string> = {
   net_worth_history: "Checked net worth history",
 };
 
-type Message = ChatTurn & { result?: AskResult; error?: boolean };
+/** Models like to write **bold**; show it as bold (as React text, never as HTML). */
+function withBold(text: string) {
+  return text.split(/(\*\*[^*\n]+\*\*)/g).map((part, i) =>
+    part.startsWith("**") && part.endsWith("**") && part.length > 4
+      ? <strong key={i}>{part.slice(2, -2)}</strong>
+      : part,
+  );
+}
 
 /**
  * Ask questions in plain English. The model on your PC answers by calling
  * read-only lookup tools; every number comes from those tools, and any number
- * that didn't is flagged. The conversation lives only in this browser tab.
+ * that didn't is flagged. The conversation lives in chatStore: it survives
+ * switching tabs and pages, and is gone when the browser tab closes.
  */
 export function AiAsk({ online }: { online: boolean }) {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const { messages, busy } = useChat();
   const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-  const bottom = useRef<HTMLDivElement>(null);
+  const thread = useRef<HTMLDivElement>(null);
 
+  // Keep the newest message in view (scrolls only the chat box, not the page).
   useEffect(() => {
-    if (messages.length) bottom.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    const box = thread.current;
+    if (box) box.scrollTop = box.scrollHeight;
   }, [messages, busy]);
 
-  async function send(question: string) {
-    question = question.trim();
-    if (!question || busy) return;
-    // Earlier turns (text only) give follow-ups like "and in November?" their context.
-    const history: ChatTurn[] = messages.filter((m) => !m.error).map(({ role, content }) => ({ role, content }));
-    setMessages((m) => [...m, { role: "user", content: question }]);
+  function send(question: string) {
+    if (!question.trim() || busy) return;
     setDraft("");
-    setBusy(true);
-    try {
-      const result = await api.ask(question, history);
-      setMessages((m) => [...m, { role: "assistant", content: result.answer, result }]);
-    } catch (e) {
-      setMessages((m) => [...m, { role: "assistant", content: (e as Error).message, error: true }]);
-    } finally {
-      setBusy(false);
-    }
+    sendQuestion(question);
   }
 
   function submit(event: FormEvent) {
@@ -79,13 +76,13 @@ export function AiAsk({ online }: { online: boolean }) {
           </div>
         </div>
       ) : (
-        <div className="ask-thread" aria-live="polite">
+        <div className="ask-thread" aria-live="polite" ref={thread}>
           {messages.map((m, i) =>
             m.role === "user" ? (
               <div key={i} className="ask-q">{m.content}</div>
             ) : (
               <div key={i} className={`ask-a ${m.error ? "error" : ""}`}>
-                <div className="ask-text">{m.content}</div>
+                <div className="ask-text">{withBold(m.content)}</div>
                 {m.result && m.result.unverified.length > 0 && (
                   <p className="ask-warning">
                     ⚠ {m.result.unverified.join(", ")} {m.result.unverified.length === 1 ? "wasn't" : "weren't"} calculated
@@ -114,7 +111,6 @@ export function AiAsk({ online }: { online: boolean }) {
             ),
           )}
           {busy && <div className="ask-a subtle">Looking that up on your PC…</div>}
-          <div ref={bottom} />
         </div>
       )}
 
@@ -132,13 +128,14 @@ export function AiAsk({ online }: { online: boolean }) {
           {busy ? "Asking…" : "Ask"}
         </button>
         {messages.length > 0 && (
-          <button className="btn" type="button" onClick={() => setMessages([])} disabled={busy}>
+          <button className="btn" type="button" onClick={clearChat} disabled={busy}>
             Clear
           </button>
         )}
       </form>
       <p className="subtle" style={{ margin: "8px 0 0" }}>
-        AI can make mistakes, and this isn't professional financial advice.
+        This conversation stays until you close the browser tab; it isn't saved. AI can make mistakes, and this
+        isn't professional financial advice.
       </p>
     </div>
   );

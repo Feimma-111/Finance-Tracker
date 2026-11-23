@@ -33,9 +33,9 @@ export function TransactionTable({
       <table>
         <thead>
           <tr>
-            <th>Date</th>
+            <th className="hide-narrow">Date</th>
             <th>Description</th>
-            <th>Category</th>
+            <th className="hide-narrow">Category</th>
             <th className="right">Amount</th>
             {!compact && <th aria-label="Actions" />}
           </tr>
@@ -43,14 +43,16 @@ export function TransactionTable({
         <tbody>
           {items.map((tx) => (
             <tr key={tx.id}>
-              <td className="num" style={{ whiteSpace: "nowrap" }}>{dateLabel(tx.occurred_on)}</td>
+              <td className="num hide-narrow" style={{ whiteSpace: "nowrap" }}>{dateLabel(tx.occurred_on)}</td>
               <td>
                 {tx.description}
                 {tx.recurring_id !== null && (
                   <span className="recurring-mark" title="Added automatically by a recurring rule"> ↻</span>
                 )}
+                {/* Phones: date and category move under the description, like Wallet. */}
+                <span className="subtle show-narrow-block">{tx.category} · {dateLabel(tx.occurred_on)}</span>
               </td>
-              <td className="subtle">{tx.category}</td>
+              <td className="subtle hide-narrow">{tx.category}</td>
               <td className={`right num ${tx.kind === "income" ? "amount-income" : ""}`} style={{ whiteSpace: "nowrap" }}>
                 {tx.kind === "income" ? "+" : "−"}
                 {money(tx.amount_cents)}

@@ -48,6 +48,7 @@ sees them as soon as they're due, with no background job needed.
 
 import csv
 import io
+import json
 import math
 from datetime import date
 from pathlib import Path
@@ -164,6 +165,8 @@ class SettingsIn(BaseModel):
     theme: Optional[Literal["system", "light", "dark"]] = None
     ai_url: Optional[str] = Field(None, description="Ollama address, e.g. http://100.101.102.103:11434; '' turns AI off")
     ai_model: Optional[str] = Field(None, max_length=100)
+    covered_categories: Optional[List[str]] = Field(None, max_length=50)
+    covered_note: Optional[str] = Field(None, max_length=120)
 
 
 # --------------------------------------------------------------------- app
@@ -233,6 +236,8 @@ def create_app(
             "database": db_path,
             "ai_url": store.get_setting("ai_url", ""),
             "ai_model": store.get_setting("ai_model", ""),
+            "covered_categories": store.covered_categories()[0],
+            "covered_note": store.get_setting("covered_note", ""),
         }
 
     @app.get("/api/settings")
@@ -251,6 +256,14 @@ def create_app(
             store.set_setting("ai_url", url)
         if body.ai_model is not None:
             store.set_setting("ai_model", body.ai_model.strip())
+        if body.covered_categories is not None:
+            unknown = [c for c in body.covered_categories if not store.find_category(c)]
+            if unknown:
+                raise HTTPException(400, f"no category called {', '.join(repr(c) for c in unknown)}")
+            names = sorted({store.find_category(c) for c in body.covered_categories}, key=str.lower)
+            store.set_setting("covered_categories", json.dumps(names))
+        if body.covered_note is not None:
+            store.set_setting("covered_note", body.covered_note.strip())
         return settings_json(store)
 
     # --------------------------------------------------------- AI analyst

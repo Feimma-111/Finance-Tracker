@@ -33,6 +33,8 @@ export interface Settings {
   database: string;
   ai_url: string; // "" = AI analyst not set up
   ai_model: string;
+  covered_categories: string[]; // expenses someone else pays for (e.g. parents pay rent)
+  covered_note: string;
 }
 
 export interface AiStatus {
@@ -237,7 +239,7 @@ export const api = {
   renameProfile: (name: string) => request<{ name: string }>("/api/profile", json("PUT", { name })),
 
   settings: () => request<Settings>("/api/settings"),
-  saveSettings: (body: Partial<Pick<Settings, "theme" | "ai_url" | "ai_model">>) =>
+  saveSettings: (body: Partial<Pick<Settings, "theme" | "ai_url" | "ai_model" | "covered_categories" | "covered_note">>) =>
     request<Settings>("/api/settings", json("PUT", body)),
 
   importPreview: (csv: string, mapping?: ImportMapping, options?: ImportOptions) =>

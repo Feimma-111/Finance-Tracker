@@ -92,6 +92,30 @@ class ToolTests(unittest.TestCase):
         # SQL wildcards in the search text are treated literally.
         self.assertEqual(self.tools.run("find_transactions", {"text": "%"})["count"], 0)
 
+    def test_covered_categories(self):
+        self.store.set_setting("covered_categories", '["Groceries", "Travel", "Deleted category"]')
+        self.store.set_setting("covered_note", "My parents pay for these")
+        tools = Tools(self.store, TODAY)
+        self.assertEqual(tools.covered, ["Groceries", "Travel"])  # missing names dropped
+        aug = tools.run("spending_total", {"start": "2026-08-01", "end": "2026-08-31"})
+        self.assertEqual((aug["total"], aug["covered_by_others"], aug["spending_you_control"]),
+                         ("$801.50", "$789.00", "$12.50"))
+        by_cat = tools.run("spending_by_category", {"start": "2026-08-01", "end": "2026-08-31"})
+        self.assertTrue(by_cat["categories"][0]["covered_by_someone_else"])  # Travel
+        self.assertEqual(by_cat["spending_you_control"], "$12.50")
+        monthly = tools.run("monthly_spending", {"start_month": "2026-08", "end_month": "2026-10"})
+        self.assertEqual([m["spending_you_control"] for m in monthly["months"]], ["$12.50", "$0.00", "$6.50"])
+        self.assertEqual(monthly["monthly_average_you_control"], "$6.33")
+        compare = tools.run("compare_spending", {"first_start": "2026-08-01", "first_end": "2026-08-31",
+                                                 "second_start": "2026-10-01", "second_end": "2026-10-31"})
+        self.assertEqual(compare["spending_you_control_difference"], "$6.00 less in the second period")
+        self.assertEqual(tools.run("spending_total", {"start": "2026-08-01", "end": "2026-08-31",
+                                                      "category": "Travel"})["covered_by_someone_else"],
+                         "My parents pay for these")
+        from finance_tracker.assistant import system_prompt
+        self.assertIn("paid for by someone else (My parents pay for these): Groceries, Travel",
+                      system_prompt(self.store, TODAY))
+
     def test_recurring_monthly_equivalents(self):
         result = self.tools.run("recurring_charges", {})
         gym = next(r for r in result["recurring"] if r["description"] == "Gym")

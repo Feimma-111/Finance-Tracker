@@ -42,7 +42,7 @@ monthly_spending, for monthly costs of subscriptions use recurring_charges.
 {today}; "last month" means all of {last_month}; "this year" means {year}-01-01 \
 to {today}.
 - Category names come from list_categories; match the user's words to them.
-- If the data can't answer the question, say so plainly.
+- If the data can't answer the question, say so plainly.{covered}
 - Be brief: one to four sentences, or a short list.
 - Do not recommend specific investments, securities, or financial products.
 """
@@ -139,6 +139,18 @@ class Tools:
     def __init__(self, store: Store, today: date) -> None:
         self.store = store
         self.today = today
+        self.covered, self.covered_note = store.covered_categories()
+
+    def _covered_cents(self, first: date, last: date) -> int:
+        return sum(self.store.total_between(Kind.EXPENSE, first, last, category=c)[0] for c in self.covered)
+
+    def _add_controlled(self, result: Dict[str, Any], total: int, first: date, last: date,
+                        prefix: str = "") -> None:
+        """Add 'covered by others' / 'spending you control' to an all-categories result."""
+        if self.covered:
+            covered = self._covered_cents(first, last)
+            result[prefix + "covered_by_others"] = format_money(covered)
+            result[prefix + "spending_you_control"] = format_money(total - covered)
 
     def run(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         handler = getattr(self, f"tool_{name}", None)
@@ -185,15 +197,24 @@ class Tools:
     # -- the tools
 
     def tool_list_categories(self) -> Dict[str, Any]:
-        return {"expense_categories": self.store.categories(Kind.EXPENSE),
-                "income_categories": self.store.categories(Kind.INCOME)}
+        result: Dict[str, Any] = {"expense_categories": self.store.categories(Kind.EXPENSE),
+                                  "income_categories": self.store.categories(Kind.INCOME)}
+        if self.covered:
+            result["covered_by_someone_else"] = {"categories": self.covered, "note": self.covered_note}
+        return result
 
     def _total(self, kind: Kind, start: str, end: str, category: Optional[str]) -> Dict[str, Any]:
         first, last = self._period(start, end)
         name = self._category(category)
         cents, count = self.store.total_between(kind, first, last, category=name)
-        return {"period": self._label(first, last), "category": name or "all categories",
-                "total": format_money(cents), "transactions": count}
+        result: Dict[str, Any] = {"period": self._label(first, last), "category": name or "all categories",
+                                  "total": format_money(cents), "transactions": count}
+        if kind is Kind.EXPENSE:
+            if name is None:
+                self._add_controlled(result, cents, first, last)
+            elif name in self.covered:
+                result["covered_by_someone_else"] = self.covered_note
+        return result
 
     def tool_spending_total(self, start: str, end: str, category: Optional[str] = None) -> Dict[str, Any]:
         return self._total(Kind.EXPENSE, start, end, category)
@@ -205,14 +226,17 @@ class Tools:
         first, last = self._period(start, end)
         rows = self.store.category_totals_between(Kind.EXPENSE, first, last)
         total = sum(c for _, c in rows)
-        return {
+        result: Dict[str, Any] = {
             "period": self._label(first, last),
             "total": format_money(total),
             "categories": [
-                {"category": name, "total": format_money(cents), "share": f"{cents / total * 100:.1f}%"}
+                {"category": name, "total": format_money(cents), "share": f"{cents / total * 100:.1f}%",
+                 **({"covered_by_someone_else": True} if name in self.covered else {})}
                 for name, cents in rows
             ],
         }
+        self._add_controlled(result, total, first, last)
+        return result
 
     def tool_compare_spending(
         self, first_start: str, first_end: str, second_start: str, second_end: str,
@@ -233,6 +257,19 @@ class Tools:
         }
         if a:
             result["percent_change"] = f"{diff / a * 100:+.1f}%"
+        if name is None and self.covered:
+            ca = a - self._covered_cents(a_first, a_last)
+            cb = b - self._covered_cents(b_first, b_last)
+            result["first_period"]["spending_you_control"] = format_money(ca)
+            result["second_period"]["spending_you_control"] = format_money(cb)
+            d = cb - ca
+            result["spending_you_control_difference"] = (
+                "the same" if d == 0 else f"{format_money(abs(d))} {'more' if d > 0 else 'less'} in the second period"
+            )
+            if ca:
+                result["spending_you_control_percent_change"] = f"{d / ca * 100:+.1f}%"
+        elif name in self.covered:
+            result["covered_by_someone_else"] = self.covered_note
         return result
 
     def tool_monthly_spending(
@@ -248,17 +285,24 @@ class Tools:
         while month <= month_of(last) and len(months) < MAX_MONTHS:
             months.append(month)
             month = shift_month(month, 1)
-        values = []
+        values, controlled = [], []
         for m in months:
             y, mo = map(int, m.split("-"))
-            cents, _ = self.store.total_between(
-                Kind.EXPENSE, date(y, mo, 1), date(y, mo, calendar.monthrange(y, mo)[1]), category=name
-            )
+            m_first, m_last = date(y, mo, 1), date(y, mo, calendar.monthrange(y, mo)[1])
+            cents, _ = self.store.total_between(Kind.EXPENSE, m_first, m_last, category=name)
             values.append(cents)
+            controlled.append(cents - self._covered_cents(m_first, m_last))
+        show_controlled = name is None and bool(self.covered)
         result: Dict[str, Any] = {
             "category": name or "all categories",
-            "months": [{"month": m, "total": format_money(v)} for m, v in zip(months, values)],
+            "months": [
+                {"month": m, "total": format_money(v),
+                 **({"spending_you_control": format_money(c)} if show_controlled else {})}
+                for m, v, c in zip(months, values, controlled)
+            ],
         }
+        if name in self.covered:
+            result["covered_by_someone_else"] = self.covered_note
         # The current month isn't over, so it would drag the average down and
         # always look like the "lowest" month. Leave it out of those stats.
         current = month_of(self.today)
@@ -274,6 +318,10 @@ class Tools:
             result["months_averaged"] = len(done)
             result["highest_month"] = {"month": hi[0], "total": format_money(hi[1])}
             result["lowest_month"] = {"month": lo[0], "total": format_money(lo[1])}
+            if show_controlled:
+                done_controlled = [c for m, c in zip(months, controlled) if m < current]
+                avg_c = Decimal(sum(done_controlled)) / len(done_controlled)
+                result["monthly_average_you_control"] = format_money(int(avg_c.to_integral_value()))
         return result
 
     def tool_find_transactions(
@@ -304,7 +352,8 @@ class Tools:
                 monthly_expense += monthly
             items.append({"description": r.description, "category": r.category, "type": r.kind.value,
                           "amount": format_money(r.amount_cents), "frequency": r.frequency.value,
-                          "monthly_equivalent": format_money(monthly), "next_date": r.next_due.isoformat()})
+                          "monthly_equivalent": format_money(monthly), "next_date": r.next_due.isoformat(),
+                          **({"covered_by_someone_else": True} if r.category in self.covered else {})})
         return {"recurring": items, "recurring_expenses_per_month": format_money(monthly_expense)}
 
     def tool_net_worth_history(self, since: Optional[str] = None) -> Dict[str, Any]:
@@ -329,10 +378,17 @@ class Tools:
 
 def system_prompt(store: Store, today: date) -> str:
     earliest = store.first_transaction_date()
+    covered, note = store.covered_categories()
+    covered_rule = (
+        f"\n- These categories are paid for by someone else ({note}): {', '.join(covered)}. "
+        "They count in totals, but never suggest cutting them. When judging how the user "
+        "is doing, use the 'spending_you_control' figures the tools return."
+    ) if covered else ""
     return SYSTEM_PROMPT.format(
         today=today.isoformat(), weekday=f"{today:%A}", month=month_of(today), year=today.year,
         last_month=shift_month(month_of(today), -1),
         first=earliest.isoformat() if earliest else "today (no data yet)",
+        covered=covered_rule,
     )
 
 

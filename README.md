@@ -164,7 +164,20 @@ answer, and "How I got this" shows every lookup it made. As a final check,
 every dollar amount and percentage in the answer is compared with what the
 lookups returned. Rounding is allowed; any other number gets a warning. Follow-up
 questions ("and in October?") keep the conversation's context. The conversation
-isn't saved.
+is kept in the browser's session storage, so it survives switching tabs, pages,
+and reloads, and it's gone when the browser tab closes. It's never written to the
+database.
+
+**Expenses someone else covers.** In **Settings → Covered by someone else**, tick
+categories you don't pay for yourself, such as rent or tuition your parents
+cover, and say who covers them. These categories still count in your totals,
+but:
+
+- The review's fact sheet marks them `[covered]` and adds **spending you
+  control**, with its own average and comparison, all computed in Python.
+- Lookup results include `covered_by_others` and `spending_you_control`.
+- The model is told never to suggest cutting covered costs, and to judge your
+  month on the spending you control.
 
 **Setup:**
 1. On the PC, install Ollama and run `ollama pull qwen3:14b` (any 8–14B model
@@ -240,8 +253,14 @@ paused. Stopping a rule keeps the transactions it already created.
 - **Prices are cached for 15 minutes.** When offline, the app uses the last known
   price and labels it as stale. A net-worth snapshot is only recorded when every
   holding could be priced.
+- **Apple-style design:** system grays with grouped white cards (true black in
+  dark mode), Apple blue, filled input fields, a frosted top bar, segmented
+  controls, and rounded rectangles instead of pill shapes. Every color is a CSS
+  variable in `styles.css`.
 - **Charts:** ranked bars for categories instead of a pie, because lengths are
-  easier to compare than slice angles. Each asset type keeps the same color
+  easier to compare than slice angles. The chart colors passed a colorblind
+  check; Apple's own palette failed it, because its yellow is too pale and its
+  green and orange look alike to colorblind viewers. Each asset type keeps the same color
   everywhere, and every colored mark has a text label or a "Show as table"
   option, so nothing depends on color alone. Light and dark mode follow your
   system setting.

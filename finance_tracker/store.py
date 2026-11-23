@@ -188,6 +188,17 @@ class Store:
     def set_setting(self, name: str, value: str) -> None:
         self.set_meta(f"setting:{name}", value)
 
+    def covered_categories(self) -> Tuple[List[str], str]:
+        """(category names, note) for expenses someone else pays for, e.g. rent
+        covered by parents. Names that no longer exist are dropped."""
+        try:
+            names = json.loads(self.get_setting("covered_categories", "[]"))
+        except ValueError:
+            names = []
+        existing = [self.find_category(n) for n in names if isinstance(n, str)]
+        note = self.get_setting("covered_note", "") or "Paid by someone else"
+        return [n for n in existing if n], note
+
     def get_meta(self, key: str) -> Optional[str]:
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else None
