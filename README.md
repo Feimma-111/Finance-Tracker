@@ -10,11 +10,23 @@ charts or as a **terminal app**. Both read and write the same data.
 and opens your browser. Close the Terminal window to stop it. You can drag it to the
 Dock.
 
-One-time setup, from the project folder:
+One-time setup, from the project folder. You need a stable Python 3.15 from
+python.org: the big download button, not an "a", "b" or "rc" pre-release. After
+installing it, run **Install Certificates.command** in `/Applications/Python 3.15/`
+once, so Python trusts HTTPS sites. When a newer 3.15.x comes out, installing it
+updates Python in place and the setup below doesn't need redoing.
+
+```bash
+python3.15 -m venv .venv
+```
 
 ```bash
 .venv/bin/python -m pip install -r requirements.txt
 ```
+
+Every package in `requirements.txt` is pinned to a version that was at least
+two weeks old when chosen, which guards against freshly published malicious
+releases.
 
 ```bash
 cd frontend && npm install && npm run build && cd ..
@@ -125,6 +137,8 @@ python3 main.py
 ```
 
 The terminal app needs only the standard library, so there's nothing to install.
+For live prices there, Python needs its certificates installed; see the setup
+step above.
 The first run asks your name and creates the database. Every change is saved the
 moment you make it.
 

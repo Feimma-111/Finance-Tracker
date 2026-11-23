@@ -1,5 +1,27 @@
 # Only needed for the web dashboard (`main.py --web`) and its tests.
 # The terminal app uses the Python standard library alone.
+#
+# Every package is pinned (including dependencies of dependencies) so a fresh
+# install gets exactly these versions. Versions were chosen to be at least two
+# weeks old when pinned: brand-new releases are where supply-chain attacks show up.
+# Tested on Python 3.15.
+
+# What the app uses directly
 fastapi==0.128.8
 uvicorn==0.39.0
-httpx==0.28.1
+httpx==0.28.1          # test client
+certifi==2026.10.23    # trusted HTTPS certificates for live prices
+
+# What those depend on
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.16.0
+click==8.5.1
+h11==0.16.0
+httpcore==1.0.9
+idna==3.20
+pydantic==2.14.3
+pydantic-core==2.50.4
+starlette==0.52.1
+typing-extensions==4.16.0
+typing-inspection==0.4.5

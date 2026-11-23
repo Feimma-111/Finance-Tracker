@@ -13,6 +13,7 @@ price is returned and marked stale instead of crashing.
 from __future__ import annotations
 
 import json
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -36,11 +37,27 @@ class PriceProvider(Protocol):
         ...
 
 
+def _tls_context() -> ssl.SSLContext:
+    """Certificate checking for HTTPS.
+
+    Python from python.org on macOS doesn't trust any certificates until its
+    "Install Certificates" step is run. If ``certifi`` (installed with the web
+    packages) is available, use its up-to-date bundle so prices work either way.
+    Verification is never turned off.
+    """
+    try:
+        import certifi
+    except ImportError:
+        return ssl.create_default_context()
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 class YahooPriceProvider:
     URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1d&interval=1d"
 
     def __init__(self, timeout: float = 8.0) -> None:
         self.timeout = timeout
+        self.tls = _tls_context()
 
     def fetch(self, symbol: str) -> Tuple[float, str]:
         url = self.URL.format(symbol=urllib.parse.quote(symbol, safe=""))
@@ -48,7 +65,7 @@ class YahooPriceProvider:
             url, headers={"User-Agent": "Mozilla/5.0 (personal finance tracker)"}
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout, context=self.tls) as response:
                 payload = json.load(response)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
