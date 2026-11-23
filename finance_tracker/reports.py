@@ -9,10 +9,35 @@ from __future__ import annotations
 import statistics
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from .models import Holding, shift_month
+from .models import Holding, Transaction, shift_month
 from .prices import PriceUnavailable, Quote
+
+# ------------------------------------------------------------- purchases
+
+
+@dataclass(frozen=True)
+class PurchaseGroup:
+    description: str  # the spelling of the first one seen (transactions come newest first)
+    category: str
+    count: int
+    total_cents: int
+
+
+def group_purchases(transactions: Sequence[Transaction]) -> List[PurchaseGroup]:
+    """Repeat purchases together ("Boba: 3 purchases, $87.81"): the same
+    description, ignoring capitals and extra spaces, in the same category.
+    Biggest total first."""
+    amounts: Dict[Tuple[str, str], List[int]] = {}
+    shown: Dict[Tuple[str, str], str] = {}
+    for tx in transactions:
+        key = (" ".join(tx.description.lower().split()), tx.category)
+        amounts.setdefault(key, []).append(tx.amount_cents)
+        shown.setdefault(key, " ".join(tx.description.split()))
+    groups = [PurchaseGroup(shown[key], key[1], len(a), sum(a)) for key, a in amounts.items()]
+    return sorted(groups, key=lambda g: (-g.total_cents, g.description.lower()))
+
 
 # ------------------------------------------------------------- monthly spend
 

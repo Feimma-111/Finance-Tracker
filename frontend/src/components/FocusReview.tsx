@@ -84,14 +84,23 @@ export function listNames(names: string[]): string {
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
+/** Short enough for one button: names only for one or two categories. */
+function analyzeLabel(categories: string[], everything: boolean): string {
+  if (everything) return "Analyze all categories";
+  if (categories.length <= 2) return `Analyze ${listNames(categories)}`;
+  return `Analyze these ${categories.length} categories`;
+}
+
 export function FocusReview({
   month,
   categories,
+  everything = false,
   status,
   version,
 }: {
   month: string;
   categories: string[];
+  everything?: boolean; // every category is ticked
   status: AsyncState<AiStatus>;
   version: number;
 }) {
@@ -108,12 +117,12 @@ export function FocusReview({
 
   return (
     <div className="focus-ai" aria-live="polite">
-      <h3>AI on {categories.length ? "these categories" : "chosen categories"}</h3>
+      <h3>AI on {everything ? "all categories" : categories.length ? "these categories" : "ticked categories"}</h3>
       <AiStatusLine status={status} />
 
       {!categories.length ? (
         <p className="hint">
-          Pick one or more categories above, and the AI will look at just those for {monthLabel(month)}: what drove
+          Tick one or more categories above, and the AI will look at just those for {monthLabel(month)}: what drove
           the spending, how it compares with earlier months, and ideas for those categories only.
         </p>
       ) : (
@@ -121,7 +130,7 @@ export function FocusReview({
           {online && (
             <div>
               <button className="btn btn-small btn-primary" onClick={() => analyze(month, categories)} disabled={busy}>
-                {busy ? "Thinking…" : result ? "Analyze again" : `Analyze ${listNames(categories)}`}
+                {busy ? "Thinking…" : result ? "Analyze again" : analyzeLabel(categories, everything)}
               </button>
             </div>
           )}

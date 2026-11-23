@@ -14,12 +14,33 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { CategoryReport, MonthRow, NetWorth, Pace, Snapshot } from "../api";
+import type { KeyboardEvent } from "react";
+import type { CategoryReport, MonthRow, NetWorth, Pace, PurchaseReport, Snapshot } from "../api";
 import { CategoryIcon } from "../icons";
 import { assetMeta, dateLabel, dateShort, money, moneyAxis, monthLabel, monthShort, percent, seriesVar } from "../format";
 import { useChartTheme } from "../hooks";
 
 const axisTick = (color: string) => ({ fill: color, fontSize: 12 });
+
+/** Props that make a list row act like a button: click, or Enter / Space from the keyboard. */
+function pressable(onPress?: () => void) {
+  if (!onPress) return {};
+  return {
+    className: "pressable",
+    role: "button" as const,
+    tabIndex: 0,
+    onClick: onPress,
+    onKeyDown: (e: KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onPress();
+      }
+    },
+  };
+}
+
+/** Picking categories from a chart: the names to tick (just one, or everything in "Other"). */
+export type SelectCategories = (categories: string[]) => void;
 
 /* ------------------------------------------------------------------ monthly spending
    One series, so every bar is the same blue; the month you're looking at is
@@ -272,44 +293,93 @@ export function PaceChart({ pace }: { pace: Pace }) {
 
 const MAX_CATEGORY_ROWS = 8;
 
-export function CategoryBars({ report, emptyNote }: { report: CategoryReport; emptyNote?: string }) {
+interface BarRow {
+  key: string;
+  label: string;
+  note?: string; // e.g. "×3" after a purchase's name
+  icon: { category: string; hint?: string };
+  total_cents: number;
+  share: number;
+  select?: string[]; // categories to tick when the row is clicked
+}
+
+function RankBars({ rows, label, onSelect }: { rows: BarRow[]; label: string; onSelect?: SelectCategories }) {
+  const largest = Math.max(...rows.map((r) => r.total_cents));
+  return (
+    <ol className="rank-bars" aria-label={label}>
+      {rows.map((row) => {
+        const select = onSelect && row.select?.length ? () => onSelect(row.select!) : undefined;
+        return (
+          <li
+            key={row.key}
+            title={`${row.label}: ${money(row.total_cents)} (${percent(row.share)})${select ? " · Click to see just this" : ""}`}
+            {...pressable(select)}
+          >
+            <span className="label">
+              <CategoryIcon category={row.icon.category} hint={row.icon.hint} size={28} />
+              <span>
+                {row.label}
+                {row.note && <span className="subtle"> {row.note}</span>}
+              </span>
+            </span>
+            <span className="track" aria-hidden="true">
+              {/* The 3px minimum keeps tiny amounts visible; $0 gets no bar at all. */}
+              <span
+                className="fill"
+                style={{ width: `${(row.total_cents / largest) * 100}%`, minWidth: row.total_cents > 0 ? undefined : 0 }}
+              />
+            </span>
+            <span className="value">{money(row.total_cents)}</span>
+            <span className="share">{percent(row.share)}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/** Rows past the first seven become one "Other" row. */
+function capRows(rows: BarRow[], total: number, otherSelect: (rest: BarRow[]) => string[] | undefined): BarRow[] {
+  if (rows.length <= MAX_CATEGORY_ROWS) return rows;
+  const rest = rows.slice(MAX_CATEGORY_ROWS - 1);
+  const restTotal = rest.reduce((sum, r) => sum + r.total_cents, 0);
+  return [
+    ...rows.slice(0, MAX_CATEGORY_ROWS - 1),
+    {
+      key: "__other", label: `Other (${rest.length})`, icon: { category: "Other" },
+      total_cents: restTotal, share: total ? restTotal / total : 0, select: otherSelect(rest),
+    },
+  ];
+}
+
+export function CategoryBars({
+  report,
+  emptyNote,
+  onSelect,
+}: {
+  report: CategoryReport;
+  emptyNote?: string;
+  onSelect?: SelectCategories;
+}) {
   if (!report.items.length || !report.total_cents) {
     return <p className="chart-note">{emptyNote ?? "No spending recorded for this period."}</p>;
   }
+  const rows = report.items.map((i) => ({
+    key: i.category, label: i.category, icon: { category: i.category },
+    total_cents: i.total_cents, share: i.share, select: [i.category],
+  }));
+  const capped = capRows(rows, report.total_cents, (rest) => rest.map((r) => r.key));
+  return <RankBars rows={capped} label="Spending by category" onSelect={onSelect} />;
+}
 
-  let items = report.items;
-  if (items.length > MAX_CATEGORY_ROWS) {
-    const head = items.slice(0, MAX_CATEGORY_ROWS - 1);
-    const rest = items.slice(MAX_CATEGORY_ROWS - 1);
-    const restTotal = rest.reduce((sum, i) => sum + i.total_cents, 0);
-    items = [
-      ...head,
-      { category: `Other (${rest.length})`, total_cents: restTotal, share: restTotal / report.total_cents },
-    ];
-  }
-  const largest = Math.max(...items.map((i) => i.total_cents));
-
-  return (
-    <ol className="rank-bars" aria-label="Spending by category">
-      {items.map((item) => (
-        <li key={item.category} title={`${item.category}: ${money(item.total_cents)} (${percent(item.share)})`}>
-          <span className="label">
-            <CategoryIcon category={item.category} size={28} />
-            <span>{item.category}</span>
-          </span>
-          <span className="track" aria-hidden="true">
-            {/* The 3px minimum keeps tiny amounts visible; $0 gets no bar at all. */}
-            <span
-              className="fill"
-              style={{ width: `${(item.total_cents / largest) * 100}%`, minWidth: item.total_cents > 0 ? undefined : 0 }}
-            />
-          </span>
-          <span className="value">{money(item.total_cents)}</span>
-          <span className="share">{percent(item.share)}</span>
-        </li>
-      ))}
-    </ol>
-  );
+/** One category broken down by purchase ("Boba ×3"). */
+export function PurchaseBars({ report }: { report: PurchaseReport }) {
+  if (!report.total_cents) return <p className="chart-note">No purchases in {report.category} this month.</p>;
+  const rows = report.items.map((i) => ({
+    key: i.description, label: i.description, note: i.count > 1 ? `×${i.count}` : undefined,
+    icon: { category: i.description, hint: report.category }, total_cents: i.total_cents, share: i.share,
+  }));
+  return <RankBars rows={capRows(rows, report.total_cents, () => undefined)} label={`${report.category} by purchase`} />;
 }
 
 /* ------------------------------------------------------------------ allocation by asset type
@@ -358,6 +428,7 @@ export interface Slice {
   label: string;
   value_cents: number;
   color: string; // a CSS color or var(--...)
+  select?: string[]; // categories to tick when this slice (or its legend row) is clicked
 }
 
 export function Donut({
@@ -365,17 +436,20 @@ export function Donut({
   centerLabel,
   listEmpty = false,
   emptyNote = "Nothing to show for this period.",
+  onSelect,
 }: {
   slices: Slice[];
   centerLabel: string;
   listEmpty?: boolean; // keep $0 slices in the legend (chosen categories with nothing this month)
   emptyNote?: string;
+  onSelect?: SelectCategories;
 }) {
   const t = useChartTheme();
   const total = slices.reduce((sum, s) => sum + Math.max(s.value_cents, 0), 0);
   if (!total) return <p className="chart-note">{emptyNote}</p>;
   const visible = slices.filter((s) => s.value_cents > 0);
   const listed = listEmpty ? slices : visible;
+  const pick = (s?: Slice) => (onSelect && s?.select?.length ? () => onSelect(s.select!) : undefined);
 
   return (
     <div className="donut-layout">
@@ -393,8 +467,11 @@ export function Donut({
               stroke={t.surface}
               strokeWidth={2}
               isAnimationActive={false}
+              onClick={(_: unknown, index: number) => pick(visible[index])?.()}
             >
-              {visible.map((s) => <Cell key={s.key} fill={s.color} />)}
+              {visible.map((s) => (
+                <Cell key={s.key} fill={s.color} cursor={pick(s) ? "pointer" : undefined} />
+              ))}
             </Pie>
             <Tooltip
               content={({ active, payload }) => {
@@ -404,6 +481,7 @@ export function Donut({
                   <div className="chart-tooltip">
                     <strong>{s.label}</strong>
                     {money(s.value_cents)} · {percent(s.value_cents / total)}
+                    {pick(s) && <span className="subtle">Click to see just {s.select!.length > 1 ? "these" : "this"}</span>}
                   </div>
                 );
               }}
@@ -417,7 +495,7 @@ export function Donut({
       </div>
       <ul className="legend">
         {listed.map((s) => (
-          <li key={s.key}>
+          <li key={s.key} {...pressable(pick(s))}>
             <span className="swatch" style={{ background: s.color }} />
             <span>{s.label}</span>
             <span className="value">{money(s.value_cents)}</span>
@@ -444,7 +522,8 @@ export function AllocationDonut({ worth }: { worth: NetWorth }) {
  * Spending by category as a donut. ``colorOrder`` is the user's biggest
  * categories of all time (covered ones excluded); the first five get the five
  * series colors for good, the rest of the month is "Other", and covered costs
- * (e.g. rent your parents pay) are one light-gray "Covered" slice.
+ * (e.g. rent your parents pay) are one light-gray "Covered" slice. Clicking a
+ * slice ticks that category; "Other" and "Covered" tick everything inside them.
  */
 export function CategoryDonut({
   report,
@@ -453,6 +532,7 @@ export function CategoryDonut({
   coveredLabel,
   hideCovered,
   focus = [],
+  onSelect,
 }: {
   report: CategoryReport;
   colorOrder: string[];
@@ -460,6 +540,7 @@ export function CategoryDonut({
   coveredLabel: string;
   hideCovered: boolean;
   focus?: string[]; // chosen categories, biggest of all time first; empty = everything
+  onSelect?: SelectCategories;
 }) {
   const isCovered = new Set(covered.map((c) => c.toLowerCase()));
   const byName = new Map(report.items.map((i) => [i.category.toLowerCase(), i.total_cents]));
@@ -470,6 +551,7 @@ export function CategoryDonut({
         centerLabel="Chosen"
         listEmpty
         emptyNote="No spending in these categories this month."
+        onSelect={onSelect}
       />
     );
   }
@@ -480,20 +562,24 @@ export function CategoryDonut({
     label: name,
     value_cents: byName.get(name.toLowerCase()) ?? 0,
     color: seriesVar(i + 1),
+    select: [name],
   }));
   const coloredSet = new Set(colored.map((c) => c.toLowerCase()));
-  let other = 0;
-  let coveredTotal = 0;
+  const other: string[] = [];
+  const coveredHere: string[] = [];
   for (const item of report.items) {
     const key = item.category.toLowerCase();
-    if (isCovered.has(key)) coveredTotal += item.total_cents;
-    else if (!coloredSet.has(key)) other += item.total_cents;
+    if (isCovered.has(key)) coveredHere.push(item.category);
+    else if (!coloredSet.has(key)) other.push(item.category);
   }
-  slices.push({ key: "__other", label: "Other", value_cents: other, color: "var(--other)" });
+  const sum = (names: string[]) => names.reduce((total, n) => total + (byName.get(n.toLowerCase()) ?? 0), 0);
+  slices.push({ key: "__other", label: "Other", value_cents: sum(other), color: "var(--other)", select: other });
   if (!hideCovered) {
-    slices.push({ key: "__covered", label: coveredLabel, value_cents: coveredTotal, color: "var(--covered)" });
+    slices.push({
+      key: "__covered", label: coveredLabel, value_cents: sum(coveredHere), color: "var(--covered)", select: coveredHere,
+    });
   }
-  return <Donut slices={slices} centerLabel="Spent" />;
+  return <Donut slices={slices} centerLabel="Spent" onSelect={onSelect} />;
 }
 
 /**
@@ -515,20 +601,43 @@ function focusSlices(focus: string[], byName: Map<string, number>, isCovered: Se
   const colored = spent.slice(0, FOCUS_COLORS);
   const rest = spent.slice(FOCUS_COLORS);
   const slices: Slice[] = colored.map((name, i) => ({
-    key: name, label: label(name), value_cents: value(name), color: seriesVar(i + 1),
+    key: name, label: label(name), value_cents: value(name), color: seriesVar(i + 1), select: [name],
   }));
   if (rest.length) {
     slices.push({
       key: "__other",
-      label: `Other (${rest.join(", ")})`,
+      label: rest.length <= 2 ? `Other (${rest.join(", ")})` : `${rest.length} others`,
       value_cents: rest.reduce((sum, name) => sum + value(name), 0),
       color: "var(--other)",
+      select: rest,
     });
   }
   for (const name of focus.filter((n) => value(n) <= 0)) {
-    slices.push({ key: name, label: label(name), value_cents: 0, color: "var(--fill-strong)" });
+    slices.push({ key: name, label: label(name), value_cents: 0, color: "var(--fill-strong)", select: [name] });
   }
   return slices;
+}
+
+/** One category broken down by purchase, colored by position like ``focusSlices``. */
+export function PurchaseDonut({ report }: { report: PurchaseReport }) {
+  const spent = report.items.filter((i) => i.total_cents > 0);
+  const colored = spent.slice(0, FOCUS_COLORS);
+  const rest = spent.slice(FOCUS_COLORS);
+  const slices: Slice[] = colored.map((i, n) => ({
+    key: i.description,
+    label: i.count > 1 ? `${i.description} ×${i.count}` : i.description,
+    value_cents: i.total_cents,
+    color: seriesVar(n + 1),
+  }));
+  if (rest.length) {
+    slices.push({
+      key: "__other",
+      label: `${rest.length} other purchase${rest.length > 1 ? "s" : ""}`,
+      value_cents: rest.reduce((sum, i) => sum + i.total_cents, 0),
+      color: "var(--other)",
+    });
+  }
+  return <Donut slices={slices} centerLabel={report.category} emptyNote={`No purchases in ${report.category} this month.`} />;
 }
 
 /* ------------------------------------------------------------------ table twin for charts */

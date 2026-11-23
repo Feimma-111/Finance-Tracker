@@ -136,6 +136,15 @@ export interface CategoryReport {
   items: { category: string; total_cents: number; share: number }[];
 }
 
+/** One category's spending, grouped by what was bought ("Boba ×3"). */
+export interface PurchaseReport {
+  month: string | null;
+  category: string;
+  total_cents: number;
+  count: number; // purchases in all
+  items: { description: string; count: number; total_cents: number; share: number }[];
+}
+
 export interface MonthRow {
   month: string;
   total_cents: number;
@@ -332,6 +341,8 @@ export const api = {
   backupNow: () => request<Backups & { name: string | null }>("/api/backups", { method: "POST" }),
 
   categoryReport: (month?: string | null) => request<CategoryReport>(`/api/reports/categories${query({ month })}`),
+  purchases: (category: string, month?: string | null) =>
+    request<PurchaseReport>(`/api/reports/purchases${query({ category, month })}`),
   monthlyReport: () => request<MonthlyReport>("/api/reports/monthly"),
   pace: (month: string) => request<Pace>(`/api/reports/pace${query({ month })}`),
 

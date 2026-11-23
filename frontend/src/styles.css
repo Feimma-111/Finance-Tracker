@@ -510,6 +510,19 @@ table.clickable-rows tbody tr:focus-visible { box-shadow: inset 0 0 0 3px var(--
 .focus-ai .ai-headline { font-size: 17px; margin: 0 0 10px; }
 .focus-ai .ai-columns { grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .focus-ai .notice, .focus-ai .hint { margin: 0; }
+/* Never wider than the panel, even with a long label. */
+.focus-ai .btn { white-space: normal; max-width: 100%; text-align: left; }
+/* "All" with only some boxes ticked: a dash instead of a check. */
+.toggle.mixed::before {
+  content: "–"; color: #fff; background: var(--accent); box-shadow: none;
+  font-size: 12px; font-weight: 700; display: grid; place-items: center;
+}
+/* Chart rows and legend rows you can click to tick that category. */
+.pressable { cursor: pointer; border-radius: 8px; }
+.legend li.pressable { margin: -3px -6px; padding: 3px 6px; }
+.pressable:hover { background: var(--hover); }
+.pressable:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus-ring); }
+.donut :focus:not(:focus-visible) { outline: none; }
 @media (max-width: 860px) {
   .category-layout { grid-template-columns: minmax(0, 1fr); }
   .focus-ai { border-left: none; padding-left: 0; border-top: 0.5px solid var(--grid); padding-top: 20px; }

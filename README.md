@@ -282,10 +282,13 @@ is kept in the browser's session storage, so it survives switching tabs, pages,
 and reloads, and it's gone when the browser tab closes. It's never written to the
 database.
 
-**Look at just some categories.** In **Spending by category**, tick categories
-such as Food and Transport. The pie or bars then show only those, with their
-total and share of the month. The panel beside the chart, **AI on these
-categories**, looks at only the ticked ones. It names the purchases that drove
+**Look at just some categories.** In **Spending by category**, every category
+starts ticked. Untick the ones to leave out, or press **All** to tick or untick
+everything at once. The pie or bars then show only the ticked categories, with
+their total and share of the month. Clicking a slice, a bar, or a legend row
+ticks just that category ("Other" ticks everything in it). With one category
+ticked, the chart breaks it down by purchase (Boba ×3, Lunch ×2, ...). The panel
+beside the chart, **AI on these categories**, looks at only the ticked ones. It names the purchases that drove
 the spending (for example, "3 boba runs, $87.81"), describes the trend, and
 gives ideas for those purchases. Its fact sheet (`focus_facts` in
 `analyst.py`) contains nothing about the other categories, so the model can't

@@ -135,6 +135,25 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(self.client.get("/api/summary", params={"month": "nope"}).status_code, 400)
 
+    def test_purchases_report(self):
+        self.add_tx(description="Boba", amount="6", occurred_on="2026-11-02")
+        self.add_tx(description="boba ", amount="7", occurred_on="2026-11-09")  # same place, messier spelling
+        self.add_tx(description="Lunch", amount="20", occurred_on="2026-11-05")
+        self.add_tx(description="Boba", amount="5", occurred_on="2026-10-30")  # another month
+        self.add_tx(description="Bus", amount="3", category="Transport", occurred_on="2026-11-05")
+        self.add_tx(description="Boba", amount="99", kind="income", category="Food", occurred_on="2026-11-06")
+
+        report = self.client.get("/api/reports/purchases", params={"category": "food", "month": "2026-11"}).json()
+        self.assertEqual((report["category"], report["total_cents"], report["count"]), ("Food", 3300, 3))
+        self.assertEqual(
+            [(i["description"], i["count"], i["total_cents"]) for i in report["items"]],
+            [("Lunch", 1, 2000), ("boba", 2, 1300)],  # spelled like the newest one
+        )
+        self.assertAlmostEqual(report["items"][0]["share"], 2000 / 3300)
+        everything = self.client.get("/api/reports/purchases", params={"category": "Food"}).json()
+        self.assertEqual(everything["total_cents"], 3800)
+        self.assertEqual(self.client.get("/api/reports/purchases", params={"category": "Nope"}).status_code, 404)
+
     def test_spending_pace(self):
         self.add_tx(amount="100", occurred_on="2026-10-02")
         self.add_tx(amount="50", occurred_on="2026-10-20")

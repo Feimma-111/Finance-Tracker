@@ -1,7 +1,16 @@
 import { useState } from "react";
 import { api, type CategoryReport, type Pace } from "../api";
 import { AiReview } from "../components/AiReview";
-import { Allocation, CategoryBars, CategoryDonut, MonthlyChart, NetWorthChart, PaceChart } from "../components/charts";
+import {
+  Allocation,
+  CategoryBars,
+  CategoryDonut,
+  MonthlyChart,
+  NetWorthChart,
+  PaceChart,
+  PurchaseBars,
+  PurchaseDonut,
+} from "../components/charts";
 import { FocusReview, listNames } from "../components/FocusReview";
 import { TransactionList } from "../components/TransactionList";
 import { Upcoming } from "../components/Upcoming";
@@ -11,8 +20,9 @@ import { useAsync } from "../hooks";
 /**
  * Home screen, laid out like Rocket Money: this month's spending and how it's
  * pacing against last month first, then net worth and upcoming bills, the AI
- * analyst, where the money went (narrowed to chosen categories if you like,
- * with the AI on just those), and recent transactions.
+ * analyst, where the money went (narrowed to ticked categories if you like,
+ * down to one category's purchases, with the AI on just those), and recent
+ * transactions.
  */
 export function Dashboard({ version, onChanged }: { version: number; onChanged: () => void }) {
   const [month, setMonth] = useState(currentMonth());
@@ -34,19 +44,33 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
   const [hideCovered, setHideCovered] = useState(() => remembered("hide-covered", "no") === "yes");
   const covered = settings.data?.covered_categories ?? [];
 
-  // Chosen categories, in all-time order (biggest first) so they never jump
-  // around between months. Names that no longer exist are dropped.
-  const [picked, setPicked] = useState<string[]>(() => rememberedList("category-focus"));
+  // Ticked categories. "all" (the default) is stored as such rather than as a
+  // list, so a category you add later is ticked too. Lists are kept in
+  // all-time order (biggest first) so nothing jumps around between months,
+  // and names that no longer exist are dropped.
+  const [picks, setPicks] = useState<Picks>(rememberedPicks);
   const allCategories = allTime.data?.items.map((i) => i.category);
-  const focus = allCategories
-    ? allCategories.filter((c) => picked.some((p) => p.toLowerCase() === c.toLowerCase()))
-    : picked;
+  const chosen =
+    picks === "all" ? (allCategories ?? [])
+    : allCategories ? allCategories.filter((c) => picks.some((p) => p.toLowerCase() === c.toLowerCase()))
+    : picks;
+  const everything = picks === "all" || (!!allCategories?.length && chosen.length === allCategories.length);
   const choose = (next: string[]) => {
-    setPicked(next);
-    remember("category-focus", JSON.stringify(next));
+    const value: Picks = allCategories?.length && next.length >= allCategories.length ? "all" : next;
+    setPicks(value);
+    remember("category-picks", JSON.stringify(value));
   };
   const toggleCategory = (name: string) =>
-    choose(focus.includes(name) ? focus.filter((c) => c !== name) : [...focus, name]);
+    choose(chosen.includes(name) ? chosen.filter((c) => c !== name) : [...chosen, name]);
+  // "All" ticks every box, or unticks them all if they're already all ticked.
+  const toggleAll = () => choose(everything ? [] : (allCategories ?? []));
+  // What the chart shows: everything, a few categories, one category's purchases, or nothing.
+  const view = everything ? "all" : chosen.length === 0 ? "none" : chosen.length === 1 ? "one" : "some";
+  const single = view === "one" ? chosen[0] : null;
+  const purchases = useAsync(
+    () => (single ? api.purchases(single, month) : Promise.resolve(null)),
+    [single, month, version],
+  );
 
   const monthOptions = months.data ?? [month];
 
@@ -127,7 +151,7 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
         <div className="card-head">
           <h2 className="card-title">Spending by category</h2>
           <span className="card-subtitle">
-            {focus.length ? `${focus.length} of ${allCategories?.length ?? "…"} categories` : "All categories"}
+            {everything ? "All categories" : view === "none" ? "None ticked" : `${chosen.length} of ${allCategories?.length ?? "…"} categories`}
           </span>
           <div className="card-action">
             <div className="segmented" role="group" aria-label="Chart type">
@@ -150,13 +174,20 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
         {allCategories && allCategories.length > 1 && (
           <div className="focus-picker">
             <div className="toggle-list" role="group" aria-label="Categories to show">
-              <label className={`toggle ${focus.length ? "" : "on"}`}>
-                <input type="checkbox" checked={!focus.length} onChange={() => choose([])} />
+              <label className={`toggle ${everything ? "on" : chosen.length ? "mixed" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={everything}
+                  ref={(box) => {
+                    if (box) box.indeterminate = !everything && chosen.length > 0;
+                  }}
+                  onChange={toggleAll}
+                />
                 All
               </label>
               {allCategories.map((name) => (
-                <label key={name} className={`toggle ${focus.includes(name) ? "on" : ""}`}>
-                  <input type="checkbox" checked={focus.includes(name)} onChange={() => toggleCategory(name)} />
+                <label key={name} className={`toggle ${chosen.includes(name) ? "on" : ""}`}>
+                  <input type="checkbox" checked={chosen.includes(name)} onChange={() => toggleCategory(name)} />
                   {name}
                 </label>
               ))}
@@ -165,8 +196,15 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
         )}
         <div className="category-layout">
           <div>
-            {focus.length > 0 && categories.data && <FocusTotal report={categories.data} focus={focus} month={month} />}
-            {!focus.length && covered.length > 0 && (
+            {(view === "some" || view === "one") && categories.data && (
+              <FocusTotal
+                report={categories.data}
+                focus={chosen}
+                month={month}
+                purchases={single && purchases.data?.category === single ? purchases.data.count : undefined}
+              />
+            )}
+            {view === "all" && covered.length > 0 && (
               <label className="check-row" style={{ marginBottom: 12 }}>
                 <input
                   type="checkbox"
@@ -180,27 +218,38 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
               </label>
             )}
             {categories.error && <p className="message error">{categories.error}</p>}
-            {categories.data && (chart === "pie" ? (
+            {categories.data && view === "none" && (
+              <p className="chart-note">Nothing ticked. Tick some categories above, or press All.</p>
+            )}
+            {view === "one" && single && (
+              purchases.error ? <p className="message error">{purchases.error}</p>
+              : purchases.data?.category !== single ? <p className="chart-note">…</p>
+              : chart === "pie" ? <PurchaseDonut report={purchases.data} />
+              : <PurchaseBars report={purchases.data} />
+            )}
+            {categories.data && (view === "all" || view === "some") && (chart === "pie" ? (
               <CategoryDonut
                 report={categories.data}
                 colorOrder={allCategories ?? []}
                 covered={covered}
                 coveredLabel="Covered"
                 hideCovered={hideCovered}
-                focus={focus}
+                focus={view === "some" ? chosen : []}
+                onSelect={choose}
               />
             ) : (
               <CategoryBars
                 report={
-                  focus.length ? onlyThese(categories.data, focus)
+                  view === "some" ? onlyThese(categories.data, chosen)
                   : hideCovered ? withoutCovered(categories.data, covered)
                   : categories.data
                 }
-                emptyNote={focus.length ? "No spending in these categories this month." : undefined}
+                emptyNote={view === "some" ? "No spending in these categories this month." : undefined}
+                onSelect={choose}
               />
             ))}
           </div>
-          <FocusReview month={month} categories={focus} status={ai} version={version} />
+          <FocusReview month={month} categories={chosen} everything={everything} status={ai} version={version} />
         </div>
       </section>
 
@@ -271,12 +320,23 @@ function SpendHero({ pace }: { pace: Pace }) {
 }
 
 /** "$70.00 on Food and Transport in November 2026, 17% of everything you spent." */
-function FocusTotal({ report, focus, month }: { report: CategoryReport; focus: string[]; month: string }) {
+function FocusTotal({
+  report,
+  focus,
+  month,
+  purchases,
+}: {
+  report: CategoryReport;
+  focus: string[];
+  month: string;
+  purchases?: number; // shown for a single category ("across 12 purchases")
+}) {
   const total = onlyThese(report, focus).total_cents;
   const names = focus.length > 3 ? `these ${focus.length} categories` : listNames(focus);
   return (
     <p className="focus-total">
       <strong>{money(total)}</strong> on {names} in {monthLabel(month)}
+      {purchases !== undefined && ` across ${purchases} purchase${purchases === 1 ? "" : "s"}`}
       {report.total_cents > 0 && `, ${percent(total / report.total_cents)} of everything you spent`}.
     </p>
   );
@@ -309,12 +369,18 @@ function remembered(key: string, fallback: string): string {
     return fallback;
   }
 }
-function rememberedList(key: string): string[] {
+type Picks = "all" | string[];
+
+function rememberedPicks(): Picks {
   try {
-    const value = JSON.parse(remembered(key, "[]"));
-    return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+    const saved = JSON.parse(remembered("category-picks", "null"));
+    if (saved === "all") return "all";
+    if (Array.isArray(saved)) return saved.filter((v): v is string => typeof v === "string");
+    // Before "All" ticked every box, an empty list meant "everything".
+    const older = JSON.parse(remembered("category-focus", "[]"));
+    return Array.isArray(older) && older.length ? older.filter((v): v is string => typeof v === "string") : "all";
   } catch {
-    return [];
+    return "all";
   }
 }
 function remember(key: string, value: string): void {

@@ -34,6 +34,7 @@ GET    /api/backups/download         download a full copy of the database
 POST   /api/import/preview           read a CSV and show what importing would do
 POST   /api/import                   import a CSV's new transactions
 GET    /api/reports/categories       spending per category (optionally one month)
+GET    /api/reports/purchases?category=&month=   one category's purchases, grouped by description
 GET    /api/reports/monthly          last 12 months with how unusual each was
 GET    /api/reports/pace?month=      running total through a month vs the month before
 GET    /api/holdings                 your holdings
@@ -804,6 +805,30 @@ def create_app(
             "items": [
                 {"category": name, "total_cents": cents, "share": cents / total if total else 0}
                 for name, cents in rows
+            ],
+        }
+
+    @app.get("/api/reports/purchases")
+    def purchases_report(
+        category: str, month: Optional[str] = None, store: Store = Depends(get_store)
+    ) -> Dict[str, Any]:
+        """What one category's spending was made of: purchases grouped by description."""
+        month = _month_or_400(month)
+        name = store.find_category(category)
+        if name is None:
+            raise HTTPException(404, f"no category called {category!r}")
+        expenses = [t for t in store.transactions(month=month) if t.kind is Kind.EXPENSE and t.category == name]
+        groups = reports.group_purchases(expenses)
+        total = sum(g.total_cents for g in groups)
+        return {
+            "month": month,
+            "category": name,
+            "total_cents": total,
+            "count": len(expenses),
+            "items": [
+                {"description": g.description, "count": g.count, "total_cents": g.total_cents,
+                 "share": g.total_cents / total if total else 0}
+                for g in groups
             ],
         }
 

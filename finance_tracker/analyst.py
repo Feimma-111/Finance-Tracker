@@ -28,6 +28,7 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .models import Kind, format_money, month_of, shift_month
+from .reports import group_purchases
 from .store import Store
 
 BASELINE_MONTHS = 6
@@ -336,21 +337,15 @@ def focus_facts(store: Store, month: str, categories: Sequence[str], today: date
     else:
         # Repeat purchases grouped ("Coffee: 9 purchases, $47.25"), so the model
         # can talk about habits, not just single big items.
-        groups: Dict[Tuple[str, str], List[int]] = {}
-        shown: Dict[Tuple[str, str], str] = {}
-        for t in expenses:
-            key = (" ".join(t.description.lower().split()), t.category)
-            groups.setdefault(key, []).append(t.amount_cents)
-            shown.setdefault(key, t.description.strip())
+        groups = group_purchases(expenses)
         if len(groups) < len(expenses):  # at least one description repeats
-            ranked = sorted(groups.items(), key=lambda kv: (-sum(kv[1]), shown[kv[0]].lower()))
             lines.append(f"Purchases this month grouped by description ({len(expenses)} purchases in total):")
-            for key, amounts in ranked[:MAX_GROUPS]:
-                count = f"{len(amounts)} purchases" if len(amounts) > 1 else "1 purchase"
-                lines.append(f"- {shown[key]} ({key[1]}): {count}, {format_money(sum(amounts))}{tag(key[1])}")
-            rest = ranked[MAX_GROUPS:]
+            for g in groups[:MAX_GROUPS]:
+                count = f"{g.count} purchases" if g.count > 1 else "1 purchase"
+                lines.append(f"- {g.description} ({g.category}): {count}, {format_money(g.total_cents)}{tag(g.category)}")
+            rest = groups[MAX_GROUPS:]
             if rest:
-                lines.append(f"- {len(rest)} other descriptions: {format_money(sum(sum(a) for _, a in rest))}")
+                lines.append(f"- {len(rest)} other descriptions: {format_money(sum(g.total_cents for g in rest))}")
             lines.append("")
         lines.append("Largest purchases in these categories this month:")
         for tx in sorted(expenses, key=lambda t: t.amount_cents, reverse=True)[:5]:
