@@ -77,11 +77,18 @@ MIGRATIONS: Tuple[str, ...] = (SCHEMA_V1,)
 
 
 class Store:
-    def __init__(self, path: Union[str, Path]) -> None:
+    def __init__(self, path: Union[str, Path], *, check_same_thread: bool = True) -> None:
+        """Open (and if needed create/upgrade) the database at ``path``.
+
+        The web API opens one Store per request; its framework may create the
+        connection on one worker thread and use it on another, so it passes
+        ``check_same_thread=False``. That's safe because a request's Store is
+        only ever used by that one request, one step at a time.
+        """
         self.path = str(path)
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path)
+        self.conn = sqlite3.connect(self.path, check_same_thread=check_same_thread)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self._migrate()

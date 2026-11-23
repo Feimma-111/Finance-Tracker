@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import os
 from datetime import date
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, TypeVar
@@ -30,13 +29,9 @@ from .models import (
     parse_money,
     parse_month,
 )
+from .paths import EXPORT_DIR, LEGACY_FILE, database_path
 from .prices import PriceService, PriceUnavailable, YahooPriceProvider
 from .store import Store
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DB = PROJECT_ROOT / "data" / "finance.db"
-LEGACY_FILE = PROJECT_ROOT / "information_save_file"
-EXPORT_DIR = PROJECT_ROOT / "exports"
 
 MAX_CATEGORY_CHOICES = 12
 
@@ -523,7 +518,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = argparse.ArgumentParser(description="Personal finance and portfolio tracker.")
     parser.add_argument(
         "--db",
-        default=os.environ.get("FINANCE_TRACKER_DB", str(DEFAULT_DB)),
+        default=database_path(),
         help="path to the SQLite database (default: data/finance.db)",
     )
     parser.add_argument(
@@ -533,7 +528,26 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         metavar="FILE",
         help="import transactions from the old JSON-lines save file, then exit",
     )
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="start the web dashboard instead of the terminal app",
+    )
+    parser.add_argument("--port", type=int, default=8000, help="port for --web (default: 8000)")
     args = parser.parse_args(argv)
+
+    if args.web:
+        try:
+            from .api import serve
+        except ImportError:
+            print(
+                "The web dashboard needs a few packages. Install them with:\n"
+                "  .venv/bin/python -m pip install -r requirements.txt\n"
+                "then run:  .venv/bin/python main.py --web"
+            )
+            raise SystemExit(1)
+        serve(args.db, port=args.port)
+        return
 
     with Store(args.db) as store:
         app = App(store, PriceService(store, YahooPriceProvider()))

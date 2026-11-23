@@ -9,6 +9,11 @@ information_save_file
 __pycache__/
 *.pyc
 
+# Frontend: installed packages and build output (recreate with npm install / npm run build)
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
+
 # Local tool settings
 .claude/settings.local.json
 .DS_Store
