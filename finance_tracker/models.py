@@ -1,0 +1,172 @@
+"""Core data types plus money and date helpers.
+
+Design notes
+------------
+* Money is stored as integer cents. Floats can't represent most decimal amounts
+  exactly (0.1 + 0.2 == 0.30000000000000004), and those errors pile up in a
+  ledger. Integer cents are exact, compact, and sum correctly inside SQLite.
+* Transaction amounts are always positive; ``kind`` says which way the money
+  moved. That keeps "how much did I spend on food?" a plain SUM.
+* Dates are ``datetime.date`` objects in Python and ISO strings (YYYY-MM-DD) on
+  disk -- the storage-vs-logic boundary from the original version.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from enum import Enum
+from typing import Optional
+
+# Yahoo Finance symbol for gold futures, quoted in USD per troy ounce.
+GOLD_SYMBOL = "GC=F"
+
+_CENT = Decimal("0.01")
+_MAX_AMOUNT = Decimal("1000000000000")  # one trillion dollars; anything above is a typo
+
+
+class Kind(str, Enum):
+    EXPENSE = "expense"
+    INCOME = "income"
+
+
+class AssetType(str, Enum):
+    CASH = "cash"      # bank accounts, savings, cash on hand -- valued by hand
+    STOCK = "stock"    # shares / ETFs, priced live by ticker
+    CRYPTO = "crypto"  # priced live by Yahoo symbol, e.g. BTC-USD
+    GOLD = "gold"      # troy ounces, priced live
+    OTHER = "other"    # car, collectibles, anything valued by hand
+
+    @property
+    def is_market_priced(self) -> bool:
+        return self in (AssetType.STOCK, AssetType.CRYPTO, AssetType.GOLD)
+
+
+@dataclass(frozen=True)
+class Transaction:
+    description: str
+    amount_cents: int
+    category: str
+    occurred_on: date
+    kind: Kind = Kind.EXPENSE
+    id: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.amount_cents, int) or self.amount_cents <= 0:
+            raise ValueError("amount must be greater than zero")
+        if not self.description.strip():
+            raise ValueError("description can't be empty")
+        if not self.category.strip():
+            raise ValueError("category can't be empty")
+
+
+@dataclass(frozen=True)
+class Holding:
+    """Something you own.
+
+    Market-priced holdings (stock, crypto, gold) are worth quantity x live price.
+    Cash and "other" holdings carry a value you set by hand.
+    """
+
+    asset_type: AssetType
+    name: str
+    quantity: float = 1.0
+    symbol: Optional[str] = None
+    manual_value_cents: Optional[int] = None
+    id: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("name can't be empty")
+        if self.quantity < 0:
+            raise ValueError("quantity can't be negative")
+        if self.asset_type.is_market_priced:
+            if not self.symbol:
+                raise ValueError(f"{self.asset_type.value} holdings need a market symbol")
+        elif self.manual_value_cents is None:
+            raise ValueError(f"{self.asset_type.value} holdings need a value")
+
+
+# --------------------------------------------------------------------- money
+
+def dollars_to_cents(amount: Decimal) -> int:
+    return int((amount * 100).to_integral_value(rounding=ROUND_HALF_UP))
+
+
+def parse_money(text: str) -> int:
+    """Turn user input like '$1,234.50' into cents (123450).
+
+    Raises ValueError with a message that's safe to show the user.
+    """
+    cleaned = text.strip().replace(",", "").replace("$", "")
+    if not cleaned:
+        raise ValueError("enter an amount")
+    try:
+        amount = Decimal(cleaned)
+    except InvalidOperation:
+        raise ValueError(f"'{text.strip()}' isn't a number") from None
+    if not amount.is_finite():
+        raise ValueError(f"'{text.strip()}' isn't a number")
+    if abs(amount) >= _MAX_AMOUNT:
+        raise ValueError("that amount is too large")
+    if amount != amount.quantize(_CENT):
+        raise ValueError("use at most two decimal places")
+    return dollars_to_cents(amount)
+
+
+def format_money(cents: int) -> str:
+    """123450 -> '$1,234.50'; -500 -> '-$5.00'."""
+    sign = "-" if cents < 0 else ""
+    dollars, remainder = divmod(abs(cents), 100)
+    return f"{sign}${dollars:,}.{remainder:02d}"
+
+
+def cents_to_plain(cents: int) -> str:
+    """123450 -> '1234.50' (no symbol or separators; for CSV export)."""
+    sign = "-" if cents < 0 else ""
+    dollars, remainder = divmod(abs(cents), 100)
+    return f"{sign}{dollars}.{remainder:02d}"
+
+
+# --------------------------------------------------------------------- dates
+
+_DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d")
+
+
+def parse_date(text: str, *, today: date) -> date:
+    """Accept YYYY-MM-DD, YYYY/MM/DD, 'today', 'yesterday', or blank (= today)."""
+    cleaned = text.strip().lower()
+    if cleaned in ("", "today"):
+        return today
+    if cleaned == "yesterday":
+        return today - timedelta(days=1)
+    for fmt in _DATE_FORMATS:
+        try:
+            parsed = datetime.strptime(cleaned, fmt).date()
+        except ValueError:
+            continue
+        if parsed > today:
+            raise ValueError("that date is in the future")
+        return parsed
+    raise ValueError("use YYYY-MM-DD, or press Enter for today")
+
+
+def parse_month(text: str) -> str:
+    """Validate 'YYYY-MM' (or 'YYYY/MM') and return it as 'YYYY-MM'."""
+    cleaned = text.strip().replace("/", "-")
+    try:
+        return datetime.strptime(cleaned, "%Y-%m").strftime("%Y-%m")
+    except ValueError:
+        raise ValueError("use YYYY-MM, e.g. 2026-07") from None
+
+
+def month_of(day: date) -> str:
+    return day.strftime("%Y-%m")
+
+
+def shift_month(month: str, delta: int) -> str:
+    """shift_month('2026-01', -1) -> '2025-12'."""
+    year, mon = (int(part) for part in month.split("-"))
+    index = year * 12 + (mon - 1) + delta
+    return f"{index // 12:04d}-{index % 12 + 1:02d}"

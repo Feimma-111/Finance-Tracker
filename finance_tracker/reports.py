@@ -1,0 +1,156 @@
+"""Pure calculations behind the reports -- no database, no printing.
+
+Keeping these as plain functions over plain data makes them easy to test and
+reusable by a future web dashboard (Phase 4) or AI summary (Phase 5).
+"""
+
+from __future__ import annotations
+
+import statistics
+from dataclasses import dataclass
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Callable, List, Optional, Sequence, Tuple
+
+from .models import Holding, shift_month
+from .prices import PriceUnavailable, Quote
+
+# ------------------------------------------------------------- monthly spend
+
+
+@dataclass(frozen=True)
+class MonthRow:
+    month: str
+    total_cents: int
+    z_score: Optional[float]  # standard deviations away from the average month
+    in_progress: bool = False
+
+    @property
+    def label(self) -> str:
+        if self.in_progress:
+            return "in progress"
+        if self.z_score is None:
+            return ""
+        if self.z_score >= 2:
+            return "well above usual"
+        if self.z_score >= 1:
+            return "above usual"
+        if self.z_score <= -2:
+            return "well below usual"
+        if self.z_score <= -1:
+            return "below usual"
+        return ""
+
+
+@dataclass(frozen=True)
+class MonthlyReport:
+    rows: List[MonthRow]
+    mean_cents: Optional[float]   # average of completed months
+    stdev_cents: Optional[float]  # typical swing between completed months
+
+
+def month_range(start: str, end: str) -> List[str]:
+    """Inclusive list of 'YYYY-MM' strings."""
+    months = []
+    month = start
+    while month <= end:
+        months.append(month)
+        month = shift_month(month, 1)
+    return months
+
+
+def monthly_report(
+    month_totals: Sequence[Tuple[str, int]], *, current_month: str, window: int = 12
+) -> MonthlyReport:
+    """Spending per month, with how unusual each month was.
+
+    * Months with no spending count as $0 (gaps are filled in).
+    * Only the last ``window`` months are shown, starting no earlier than your
+      first recorded month -- so months before you started tracking don't drag
+      the average down.
+    * The current month is still in progress, so it's shown but left out of the
+      average and standard deviation.
+    """
+    totals = dict(month_totals)
+    if not totals:
+        return MonthlyReport([], None, None)
+
+    start = max(min(totals), shift_month(current_month, -(window - 1)))
+    end = max(max(totals), current_month)
+    months = month_range(start, end)
+
+    baseline = [totals.get(m, 0) for m in months if m < current_month]
+    mean = statistics.mean(baseline) if baseline else None
+    stdev = statistics.stdev(baseline) if len(baseline) >= 2 else None
+
+    rows = []
+    for month in months:
+        value = totals.get(month, 0)
+        finished = month < current_month
+        z_score = (value - mean) / stdev if (finished and stdev and mean is not None) else None
+        rows.append(MonthRow(month, value, z_score, in_progress=not finished))
+    return MonthlyReport(rows, mean, stdev)
+
+
+# ----------------------------------------------------------------- net worth
+
+
+@dataclass(frozen=True)
+class HoldingValue:
+    holding: Holding
+    value_cents: Optional[int]          # None when it couldn't be valued
+    unit_price: Optional[float] = None  # USD per unit, for market-priced holdings
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class NetWorthReport:
+    lines: List[HoldingValue]
+    total_cents: int
+    complete: bool  # False if any holding is missing from the total
+
+
+def value_holdings(
+    holdings: Sequence[Holding], quote: Callable[[str], Quote]
+) -> NetWorthReport:
+    lines = []
+    for holding in holdings:
+        if not holding.asset_type.is_market_priced:
+            lines.append(HoldingValue(holding, holding.manual_value_cents))
+            continue
+        try:
+            q = quote(holding.symbol or "")
+        except PriceUnavailable as exc:
+            lines.append(HoldingValue(holding, None, note=f"not counted: {exc}"))
+            continue
+        if q.currency != "USD":
+            lines.append(
+                HoldingValue(holding, None, note=f"priced in {q.currency}; not counted")
+            )
+            continue
+        value = Decimal(str(q.price)) * Decimal(str(holding.quantity)) * 100
+        note = (
+            f"last known price from {q.fetched_at:%Y-%m-%d %H:%M} UTC (offline)"
+            if q.stale
+            else ""
+        )
+        lines.append(
+            HoldingValue(
+                holding,
+                int(value.to_integral_value(rounding=ROUND_HALF_UP)),
+                unit_price=q.price,
+                note=note,
+            )
+        )
+    total = sum(line.value_cents for line in lines if line.value_cents is not None)
+    complete = all(line.value_cents is not None for line in lines)
+    return NetWorthReport(lines, total, complete)
+
+
+# ------------------------------------------------------------------ charting
+
+
+def bar(value: float, largest: float, width: int = 24) -> str:
+    """A text bar scaled so ``largest`` fills ``width`` characters."""
+    if largest <= 0 or value <= 0:
+        return ""
+    return "█" * max(1, round(width * value / largest))
