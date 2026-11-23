@@ -13,7 +13,7 @@ from finance_tracker.models import (
     occurrence,
     parse_date,
 )
-from finance_tracker.store import SCHEMA_V1, Store
+from finance_tracker.store import MIGRATIONS, SCHEMA_V1, Store
 
 
 def rent(start=date(2026, 9, 1), frequency=Frequency.MONTHLY, cents=125000):
@@ -118,7 +118,7 @@ class UpgradeTests(unittest.TestCase):
             conn.close()
 
             with Store(path) as store:
-                self.assertEqual(store.conn.execute("PRAGMA user_version").fetchone()[0], 2)
+                self.assertEqual(store.conn.execute("PRAGMA user_version").fetchone()[0], len(MIGRATIONS))
                 [old] = store.transactions()
                 self.assertEqual((old.description, old.recurring_id), ("Coffee", None))
                 store.add_transaction(Transaction("Tea", 300, "Food", date(2026, 7, 2)))

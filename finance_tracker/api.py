@@ -31,9 +31,12 @@ GET    /api/recurring                recurring rules (rent, subscriptions...)
 POST   /api/recurring                create one (past occurrences are filled in)
 PATCH  /api/recurring/{id}           pause/resume or change the amount
 DELETE /api/recurring/{id}           stop it (past transactions are kept)
-GET    /api/settings                 app settings (theme)
+GET    /api/settings                 app settings (theme, AI address and model)
 PUT    /api/settings                 change settings
 PUT    /api/profile                  rename
+GET    /api/ai/status                is the PC with Ollama reachable? which models?
+GET    /api/ai/reviews/{month}       the last saved AI review for a month
+POST   /api/ai/reviews/{month}       generate a new review on the PC
 
 Recurring transactions are caught up at the start of *every* request, so
 whatever opens the app -- your laptop, your phone, a server that's always on --
@@ -52,6 +55,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import reports
+from .analyst import AIError, AIUnavailable, OllamaClient, month_facts, normalize_url, pick_model
 from .models import (
     GOLD_SYMBOL,
     AssetType,
@@ -119,7 +123,11 @@ THEMES = ("system", "light", "dark")
 
 
 class SettingsIn(BaseModel):
-    theme: Literal["system", "light", "dark"]
+    """Only the fields you send are changed."""
+
+    theme: Optional[Literal["system", "light", "dark"]] = None
+    ai_url: Optional[str] = Field(None, description="Ollama address, e.g. http://100.101.102.103:11434; '' turns AI off")
+    ai_model: Optional[str] = Field(None, max_length=100)
 
 
 # --------------------------------------------------------------------- app
@@ -131,6 +139,7 @@ def create_app(
     provider: Optional[PriceProvider] = None,
     today: Callable[[], date] = date.today,
     static_dir: Optional[Path] = FRONTEND_DIST,
+    ai_client_factory: Callable[[str], Any] = OllamaClient,
 ) -> FastAPI:
     db_path = str(db_path)
     provider = provider or YahooPriceProvider()
@@ -181,15 +190,81 @@ def create_app(
 
     # --------------------------------------------------------- settings
 
+    def settings_json(store: Store) -> Dict[str, Any]:
+        theme = store.get_setting("theme", "system")
+        return {
+            "theme": theme if theme in THEMES else "system",
+            "database": db_path,
+            "ai_url": store.get_setting("ai_url", ""),
+            "ai_model": store.get_setting("ai_model", ""),
+        }
+
     @app.get("/api/settings")
     def get_settings(store: Store = Depends(get_store)) -> Dict[str, Any]:
-        theme = store.get_setting("theme", "system")
-        return {"theme": theme if theme in THEMES else "system", "database": db_path}
+        return settings_json(store)
 
     @app.put("/api/settings")
     def put_settings(body: SettingsIn, store: Store = Depends(get_store)) -> Dict[str, Any]:
-        store.set_setting("theme", body.theme)
-        return {"theme": body.theme, "database": db_path}
+        if body.theme is not None:
+            store.set_setting("theme", body.theme)
+        if body.ai_url is not None:
+            try:
+                url = normalize_url(body.ai_url) if body.ai_url.strip() else ""
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from None
+            store.set_setting("ai_url", url)
+        if body.ai_model is not None:
+            store.set_setting("ai_model", body.ai_model.strip())
+        return settings_json(store)
+
+    # --------------------------------------------------------- AI analyst
+
+    def ai_client(store: Store):
+        url = store.get_setting("ai_url", "")
+        if not url:
+            raise HTTPException(400, "The AI analyst isn't set up yet. Add your PC's address in Settings.")
+        return ai_client_factory(url)
+
+    @app.get("/api/ai/status")
+    def ai_status(store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """Is the PC on, and which models does it have? Answers within ~3 seconds."""
+        url = store.get_setting("ai_url", "")
+        if not url:
+            return {"configured": False, "reachable": False, "url": "", "models": [], "model": None}
+        try:
+            installed = ai_client_factory(url).models()
+        except (AIUnavailable, AIError) as exc:
+            return {"configured": True, "reachable": False, "url": url, "models": [], "model": None,
+                    "error": str(exc)}
+        return {
+            "configured": True,
+            "reachable": True,
+            "url": url,
+            "models": installed,
+            "model": pick_model(installed, store.get_setting("ai_model", "")),
+        }
+
+    @app.get("/api/ai/reviews/{month}")
+    def saved_review(month: str, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """The most recent saved review for a month (works with the PC off)."""
+        return {"saved": store.latest_review(_month_or_400(month))}
+
+    @app.post("/api/ai/reviews/{month}", status_code=201)
+    def create_review(month: str, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """Ask the model on your PC to review a month. Takes ~5-30 seconds."""
+        month = _month_or_400(month)
+        client = ai_client(store)
+        try:
+            model = pick_model(client.models(), store.get_setting("ai_model", ""))
+            if model is None:
+                raise HTTPException(409, "Ollama has no models installed. On the PC, run: ollama pull qwen3:14b")
+            facts = month_facts(store, month, today())
+            review = client.review(model, facts)
+        except AIUnavailable:
+            raise HTTPException(503, "Your PC is offline, or Ollama isn't running on it.") from None
+        except AIError as exc:
+            raise HTTPException(502, f"The model had a problem: {exc}") from None
+        return store.save_review(month, model, review.to_dict(), facts)
 
     # -------------------------------------------------------- recurring
 

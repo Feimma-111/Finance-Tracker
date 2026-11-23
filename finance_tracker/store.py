@@ -12,6 +12,7 @@ Why SQLite instead of a JSON file holding one big list:
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -105,7 +106,20 @@ ALTER TABLE transactions ADD COLUMN recurring_id INTEGER
 # Each entry upgrades the schema by one version; PRAGMA user_version records how
 # far a database file has been upgraded. Never edit an entry once real data
 # depends on it -- append a new one instead.
-MIGRATIONS: Tuple[str, ...] = (SCHEMA_V1, SCHEMA_V2)
+# Version 3: saved AI reviews, so they stay readable when the PC is off.
+SCHEMA_V3 = """
+CREATE TABLE ai_reviews (
+    id          INTEGER PRIMARY KEY,
+    month       TEXT NOT NULL,          -- YYYY-MM the review is about
+    created_at  TEXT NOT NULL,          -- ISO timestamp, UTC
+    model       TEXT NOT NULL,
+    review      TEXT NOT NULL,          -- JSON: headline, observations, suggestions
+    facts       TEXT NOT NULL           -- exactly what the model was shown
+);
+CREATE INDEX ai_reviews_by_month ON ai_reviews (month, created_at);
+"""
+
+MIGRATIONS: Tuple[str, ...] = (SCHEMA_V1, SCHEMA_V2, SCHEMA_V3)
 
 # Safety valve: never create more than this many transactions in one catch-up.
 MAX_CATCH_UP = 1000
@@ -437,6 +451,32 @@ class Store:
                     (count, due.isoformat(), row["id"]),
                 )
         return created
+
+    # ------------------------------------------------------------- AI reviews
+
+    def save_review(self, month: str, model: str, review: dict, facts: str) -> dict:
+        created_at = _utc_now()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO ai_reviews (month, created_at, model, review, facts) VALUES (?, ?, ?, ?, ?)",
+                (month, created_at, model, json.dumps(review), facts),
+            )
+        return {"month": month, "created_at": created_at, "model": model, "review": review, "facts": facts}
+
+    def latest_review(self, month: str) -> Optional[dict]:
+        row = self.conn.execute(
+            "SELECT * FROM ai_reviews WHERE month = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (month,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "month": row["month"],
+            "created_at": row["created_at"],
+            "model": row["model"],
+            "review": json.loads(row["review"]),
+            "facts": row["facts"],
+        }
 
     # --------------------------------------------------------------- holdings
 

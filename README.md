@@ -95,6 +95,7 @@ finance_tracker/
   prices.py                 live prices (Yahoo Finance) with an offline cache
   reports.py                monthly stats, net-worth math (pure functions)
   api.py                    REST API for the web dashboard (FastAPI)
+  analyst.py                AI reviews: fact sheet + Ollama client
   cli.py                    terminal menus and validated input
   legacy.py                 importer for the original JSON-lines save file
   paths.py                  where files live
@@ -127,8 +128,44 @@ legacy/main_v1.py           the original single-file version
 | GET | `/api/net-worth/history` | daily snapshots for the trend chart |
 | GET / POST | `/api/recurring` | recurring rules / add one (past occurrences filled in) |
 | PATCH / DELETE | `/api/recurring/{id}` | pause, resume, change amount / stop |
-| GET / PUT | `/api/settings` | theme (system, light, dark) |
+| GET / PUT | `/api/settings` | theme; AI address and model |
 | PUT | `/api/profile` | rename |
+| GET | `/api/ai/status` | is the PC reachable, and which models it has |
+| GET / POST | `/api/ai/reviews/{month}` | last saved review / write a new one |
+
+### AI analyst
+
+On the Dashboard, the **AI review** card writes a short review of the selected
+month: a headline, what stood out, and ideas. The model runs in
+[Ollama](https://ollama.com) on your own PC and is reached over Tailscale, so
+your data never goes to a cloud service.
+
+**How it avoids made-up numbers.** Small models describe numbers well but get
+arithmetic wrong; in testing, one reported $467 saved when the answer was $167. So
+`analyst.py` computes every total, difference, and percentage in Python and gives
+the model a fact sheet to describe. It's told never to calculate anything. The
+model also has to reply in a fixed JSON format, so the app can display it
+reliably. "What the AI was shown" on each review displays that fact sheet.
+
+**When the PC is off**, the card says so and still shows the last saved review.
+
+**Setup:**
+1. On the PC, install Ollama and run `ollama pull qwen3:14b` (any 8–14B model
+   fits a 12 GB GPU).
+2. Make Ollama listen on the PC's Tailscale address only, not `0.0.0.0`.
+   Ollama has no password, so this keeps it unreachable from your home network.
+   Get the address with `tailscale ip -4`, then:
+   ```powershell
+   setx OLLAMA_HOST "100.x.y.z:11434"
+   ```
+   Restart Ollama afterwards.
+3. If Windows Firewall blocks the port, allow Tailscale addresses only, in an
+   Administrator PowerShell:
+   ```powershell
+   New-NetFirewallRule -DisplayName "Ollama (Tailscale only)" -Direction Inbound -Protocol TCP -LocalPort 11434 -RemoteAddress 100.64.0.0/10 -Action Allow
+   ```
+4. In the app, open **Settings → AI analyst**, enter `http://100.x.y.z:11434`,
+   and choose a model.
 
 ### Recurring transactions
 
@@ -173,10 +210,10 @@ paused. Stopping a rule keeps the transactions it already created.
 - [x] Phase 2: persistence, user profile, new vs. returning user
 - [x] Phase 3: cash, stocks, crypto, and gold with live prices
 - [x] Phase 4: web dashboard (React + FastAPI) with charts
-- [ ] Phase 5: AI analyst. Still to decide: a local model (e.g. via Ollama) keeps
-  financial data on your machine, while a hosted API is easier to set up. Either
-  way, it would be a new API endpoint that sends a summary, not raw
-  transactions.
+- [x] Phase 5: AI analyst, with monthly reviews from a local model on your own PC
+- [ ] Next: a login before phone or Raspberry Pi access, asking questions about
+  your money ("how much on food since August?"), and Wake-on-LAN to turn the PC
+  on from the app
 
 Ideas not built yet: budgets per category, cost basis and gain/loss for investments, liabilities (loans, credit
 cards), and non-USD holdings.

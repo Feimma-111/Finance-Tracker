@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
+import { AiReview } from "../components/AiReview";
 import { Allocation, CategoryBars, MonthlyChart, NetWorthChart } from "../components/charts";
 import { TransactionForm } from "../components/forms";
 import { TransactionTable } from "../components/TransactionTable";
@@ -74,6 +75,10 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
           value={summary.data?.net_cents}
           note={summary.data ? (summary.data.net_cents >= 0 ? "You saved money" : "You spent more than you earned") : undefined}
         />
+      </section>
+
+      <section style={{ marginTop: 16 }}>
+        <AiReview month={month} />
       </section>
 
       <section className="grid grid-2" style={{ marginTop: 16 }}>

@@ -31,6 +31,25 @@ export interface RecurringRule {
 export interface Settings {
   theme: "system" | "light" | "dark";
   database: string;
+  ai_url: string; // "" = AI analyst not set up
+  ai_model: string;
+}
+
+export interface AiStatus {
+  configured: boolean;
+  reachable: boolean;
+  url: string;
+  models: string[];
+  model: string | null; // the model reviews will use
+  error?: string;
+}
+
+export interface SavedReview {
+  month: string;
+  created_at: string; // ISO timestamp, UTC
+  model: string;
+  review: { headline: string; observations: string[]; suggestions: string[] };
+  facts: string; // exactly what the model was shown
 }
 
 export interface Summary {
@@ -168,7 +187,12 @@ export const api = {
   renameProfile: (name: string) => request<{ name: string }>("/api/profile", json("PUT", { name })),
 
   settings: () => request<Settings>("/api/settings"),
-  saveSettings: (body: Pick<Settings, "theme">) => request<Settings>("/api/settings", json("PUT", body)),
+  saveSettings: (body: Partial<Pick<Settings, "theme" | "ai_url" | "ai_model">>) =>
+    request<Settings>("/api/settings", json("PUT", body)),
+
+  aiStatus: () => request<AiStatus>("/api/ai/status"),
+  savedReview: (month: string) => request<{ saved: SavedReview | null }>(`/api/ai/reviews/${month}`),
+  createReview: (month: string) => request<SavedReview>(`/api/ai/reviews/${month}`, { method: "POST" }),
 
   recurring: () => request<RecurringRule[]>("/api/recurring"),
   addRecurring: (body: Omit<NewTransaction, "occurred_on"> & { frequency: Frequency; start_on: string }) =>
