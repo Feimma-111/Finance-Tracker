@@ -305,6 +305,12 @@ export const api = {
   updateTransaction: (id: number, body: Partial<NewTransaction> & { apply_category_to_matching?: boolean }) =>
     request<Transaction & { also_updated: number }>(`/api/transactions/${id}`, json("PATCH", body)),
   deleteTransaction: (id: number) => request<void>(`/api/transactions/${id}`, { method: "DELETE" }),
+  makeRecurring: (id: number, frequency: Frequency, fillMissing: boolean) =>
+    request<RecurringRule & { linked: number; created: number }>(
+      `/api/transactions/${id}/recurring`, json("POST", { frequency, fill_missing: fillMissing })),
+
+  backups: () => request<Backups>("/api/backups"),
+  backupNow: () => request<Backups & { name: string | null }>("/api/backups", { method: "POST" }),
 
   categoryReport: (month?: string | null) => request<CategoryReport>(`/api/reports/categories${query({ month })}`),
   monthlyReport: () => request<MonthlyReport>("/api/reports/monthly"),
@@ -322,3 +328,9 @@ export const api = {
 };
 
 export const CSV_EXPORT_URL = "/api/transactions.csv";
+export const BACKUP_DOWNLOAD_URL = "/api/backups/download";
+
+export interface Backups {
+  location: string;
+  backups: { name: string; size: number; created: string }[];
+}

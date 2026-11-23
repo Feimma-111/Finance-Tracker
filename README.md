@@ -49,6 +49,35 @@ you open it. Each device then stays signed in for 30 days.
 - The terminal app isn't locked: it reads the database file directly, so anyone
   using your Mac could open the file anyway.
 
+### Backups
+
+- **When:** once a day automatically, plus before every CSV import, before every
+  restore, and before the database is upgraded to a new schema.
+- **How:** copies use SQLite's online backup API, so each one is consistent even
+  while the app is writing, and each is checked with `PRAGMA integrity_check`.
+- **Where:** a `backups` folder next to the database, holding the newest 30
+  daily copies and 10 safety copies. Only your user account can read them.
+- **Settings → Backups** has **Back up now** and **Download a copy**. Keep a
+  copy somewhere other than this Mac.
+- **From the terminal:**
+  ```bash
+  .venv/bin/python main.py --list-backups
+  ```
+  ```bash
+  .venv/bin/python main.py --restore-backup finance-2026-11-22.db
+  ```
+  A restore saves your current data first, so it can't lose anything.
+
+### Security, in short
+
+| | |
+|---|---|
+| Who can reach the app | Only this Mac (`127.0.0.1`), plus your own Tailscale devices through `tailscale serve`. Never turn on `tailscale funnel`, which would make it public. |
+| Sign-in | 6-digit passcode stored as a PBKDF2 hash, with a lockout after wrong guesses. Sessions use HttpOnly, SameSite=Strict cookies. |
+| Data on disk | One SQLite file, readable only by your user account, on a FileVault-encrypted disk. It's never committed to git. |
+| What leaves your devices | Ticker symbols go to Yahoo for prices. Nothing else: the AI runs on your own PC over Tailscale. |
+| Web attacks | Every query is parameterized, so SQL injection isn't possible. React escapes all text, including AI answers and imported CSVs. The SameSite cookies and JSON-only API block cross-site requests. |
+
 ### On your phone
 
 The app runs on your Mac, and your phone opens it over Tailscale, so it isn't on
@@ -69,7 +98,8 @@ the public internet and only your own devices can reach it.
    bottom tab bar, like an app.
 
 The Mac has to be awake with the app running. An always-on Raspberry Pi would
-remove that requirement.
+remove that requirement. [docs/raspberry-pi.md](docs/raspberry-pi.md) is a
+step-by-step plan for that move.
 
 ### Working on the frontend
 
@@ -95,8 +125,27 @@ python3 main.py
 ```
 
 The terminal app needs only the standard library, so there's nothing to install.
-The first run asks your name and creates `data/finance.db`. Every change is saved
-the moment you make it.
+The first run asks your name and creates the database. Every change is saved the
+moment you make it.
+
+### Where your data lives
+
+Your data is in your account's application-data folder, outside the project:
+
+| | |
+|---|---|
+| macOS | `~/Library/Application Support/Finance Tracker/finance.db` |
+| Linux (e.g. a Raspberry Pi) | `~/.local/share/finance-tracker/finance.db` |
+| Windows | `%APPDATA%\Finance Tracker\finance.db` |
+
+This location means deleting or re-cloning the project, or running
+`git clean -xdf`, can't touch your data. It also keeps the file out of synced
+folders such as iCloud Desktop & Documents, where syncing a database while it's
+in use can corrupt it. Older versions kept the database in the project's
+`data/` folder. The first time a newer version starts, it moves the database
+for you: it copies and verifies it, compares every table, and keeps the old
+file as `data/finance.db.moved` until you delete it. To use a different file,
+set `FINANCE_TRACKER_DB` or pass `--db`.
 
 ```bash
 python3 main.py --db path/to/other.db      # use a different database file
@@ -135,12 +184,14 @@ finance_tracker/
   reports.py                monthly stats, net-worth math (pure functions)
   api.py                    REST API for the web dashboard (FastAPI)
   auth.py                   passcode hashing, sessions, lockout
+  backup.py                 daily backups, safety copies, restore
   analyst.py                AI reviews: fact sheet + Ollama client
   assistant.py              AI questions: lookup tools, the tool loop, number check
   importer.py               CSV import: column guessing, parsing, duplicate detection
   cli.py                    terminal menus and validated input
   legacy.py                 importer for the original JSON-lines save file
-  paths.py                  where files live
+  paths.py                  where files live (per-OS data folder)
+  relocate.py               one-time move of old data out of the project
 frontend/
   src/api.ts                typed client for every API endpoint
   src/pages/                Dashboard, Transactions, Holdings
@@ -148,6 +199,8 @@ frontend/
   src/styles.css            design tokens (light + dark) and layout
 tests/                      unit tests, scripted terminal sessions, API tests
 legacy/main_v1.py           the original single-file version
+docs/raspberry-pi.md        plan for running it on an always-on Raspberry Pi
+deploy/                     systemd service and backup-pull script for the Pi
 ```
 
 ### API endpoints
@@ -283,7 +336,10 @@ everywhere:
 - If the app was closed for months, it catches up on the next open.
 
 Each occurrence is created exactly once, even if two requests arrive at the same
-moment. Monthly rules on the 29th–31st clamp to shorter months without drifting
+moment. You can also turn an existing transaction into a recurring one: open it
+and choose **Repeats**. Later charges you already have, with the same name and
+within a few days of each expected date, are linked to the rule instead of
+duplicated. Filling in any missing past charges is optional. Monthly rules on the 29th–31st clamp to shorter months without drifting
 (Jan 31 → Feb 28 → Mar 31). Pausing and resuming skips the months that were
 paused. Stopping a rule keeps the transactions it already created.
 
@@ -328,8 +384,8 @@ paused. Stopping a rule keeps the transactions it already created.
   everywhere, and every colored mark has a text label or a "Show as table"
   option, so nothing depends on color alone. Light and dark mode follow your
   system setting.
-- **Your data stays out of git.** `data/`, `exports/`, and any `*.db` file are
-  gitignored.
+- **Your data stays out of git.** It lives outside the project, and `data/`,
+  `exports/`, and any `*.db` file are gitignored as an extra guard.
 
 ## Roadmap
 
@@ -340,8 +396,9 @@ paused. Stopping a rule keeps the transactions it already created.
 - [x] Phase 5: AI analyst, with monthly reviews from a local model on your own PC
 - [x] Ask questions about your money, answered from exact lookups
 - [x] Passcode lock, and phone access over Tailscale
-- [ ] Next: Wake-on-LAN to turn the PC on from the app, and moving to an
-  always-on Raspberry Pi
+- [x] Automatic backups; data moved out of the project and out of iCloud sync
+- [ ] Next: move to an always-on Raspberry Pi ([plan](docs/raspberry-pi.md))
+- [ ] Later: Wake-on-LAN to turn the PC on from the app
 
 Ideas not built yet: budgets per category, cost basis and gain/loss for investments, liabilities (loans, credit
 cards), and non-USD holdings.

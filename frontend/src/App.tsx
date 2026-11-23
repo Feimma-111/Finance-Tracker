@@ -195,7 +195,7 @@ function Welcome({ onDone }: { onDone: () => void }) {
       <form className="card welcome form" onSubmit={submit}>
         <div>
           <h1>Welcome to your finance tracker</h1>
-          <p>Track spending, income, and everything you own in one place. Your data stays on this computer.</p>
+          <p>Track spending, income, and everything you own in one place. Your data lives in a file you control, with no bank logins and no finance-company servers.</p>
         </div>
         <label className="field">
           <span>What should we call you?</span>

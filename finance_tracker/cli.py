@@ -14,7 +14,7 @@ from datetime import date
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, TypeVar
 
-from . import reports
+from . import backup, reports
 from .legacy import LEGACY_META_KEY, import_legacy_file
 from .models import (
     GOLD_SYMBOL,
@@ -29,7 +29,8 @@ from .models import (
     parse_money,
     parse_month,
 )
-from .paths import EXPORT_DIR, LEGACY_FILE, database_path
+from .paths import DEFAULT_DB, EXPORT_DIR, LEGACY_FILE, database_path
+from .relocate import prepare as prepare_database
 from .prices import PriceService, PriceUnavailable, YahooPriceProvider
 from .store import Store
 
@@ -522,7 +523,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument(
         "--db",
         default=database_path(),
-        help="path to the SQLite database (default: data/finance.db)",
+        help=f"path to the SQLite database (default: {DEFAULT_DB})",
     )
     parser.add_argument(
         "--import-legacy",
@@ -543,7 +544,33 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         action="store_true",
         help="forget the web app's passcode and sign out every device (you'll choose a new one next time)",
     )
+    parser.add_argument("--list-backups", action="store_true", help="show the automatic backups and where they are")
+    parser.add_argument(
+        "--restore-backup",
+        metavar="FILE",
+        help="replace your data with a backup file (your current data is backed up first)",
+    )
     args = parser.parse_args(argv)
+    # First run of this version: move data out of the project folder (see relocate.py).
+    args.db = prepare_database(args.db)
+
+    if args.list_backups:
+        files = backup.list_backups(args.db)
+        print(f"Backups in {backup.backup_dir(args.db)}:")
+        for item in files:
+            print(f"  {item['name']}  ({int(item['size']) // 1024} KB, {item['created']})")
+        if not files:
+            print("  (none yet)")
+        return
+
+    if args.restore_backup:
+        source = Path(args.restore_backup)
+        if not source.is_absolute() and not source.exists():
+            source = backup.backup_dir(args.db) / source  # allow just the file name
+        safety = backup.restore(args.db, source)
+        print(f"Restored {source.name}. Your previous data was saved as {safety.name}.")
+        print("If the web app is running, reload the page.")
+        return
 
     if args.reset_passcode:
         with Store(args.db) as store:
@@ -565,6 +592,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         return
 
     with Store(args.db) as store:
+        backup.secure_database(args.db)
+        try:
+            backup.make_backup(args.db)  # once a day
+        except (OSError, backup.BackupError) as exc:
+            print(f"Warning: daily backup failed: {exc}")
         app = App(store, PriceService(store, YahooPriceProvider()))
         if args.import_legacy:
             app.import_legacy(Path(args.import_legacy))

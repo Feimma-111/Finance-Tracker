@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api, CSV_EXPORT_URL, LOCKED_EVENT, type AiStatus, type Settings as SettingsData } from "../api";
+import { api, BACKUP_DOWNLOAD_URL, CSV_EXPORT_URL, LOCKED_EVENT, type AiStatus, type Settings as SettingsData } from "../api";
 import { CsvImport } from "../components/CsvImport";
 import { useAsync, type ThemeChoice } from "../hooks";
 
@@ -81,6 +81,56 @@ function AiSettings({ settings, onSaved }: { settings: SettingsData; onSaved: (s
           </span>
         )
       )}
+    </section>
+  );
+}
+
+/** Automatic backups: when the last one ran, back up now, or download a copy. */
+function BackupSettings() {
+  const [refresh, setRefresh] = useState(0);
+  const list = useAsync(api.backups, [refresh]);
+  const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function backupNow() {
+    setBusy(true);
+    try {
+      const made = await api.backupNow();
+      setMessage({ text: `Backed up as ${made.name}.`, error: false });
+      setRefresh((r) => r + 1);
+    } catch (e) {
+      setMessage({ text: (e as Error).message, error: true });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const latest = list.data?.backups[0];
+  return (
+    <section className="setting-row">
+      <h3>Backups</h3>
+      <span className="hint">
+        Your data is backed up automatically once a day, and before every import or restore. The last 30 daily
+        backups are kept. These copies are on this Mac, so also keep one somewhere else (an external drive, or
+        Download a copy).
+      </span>
+      {list.data && (
+        <span className="subtle">
+          {latest
+            ? `Last backup: ${new Date(latest.created).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} · ${list.data.backups.length} saved`
+            : "No backups yet."}
+        </span>
+      )}
+      {list.data && <code className="path">{list.data.location}</code>}
+      <div className="inline-form">
+        <button className="btn" type="button" onClick={backupNow} disabled={busy}>Back up now</button>
+        <a className="btn" href={BACKUP_DOWNLOAD_URL} download>Download a copy</a>
+      </div>
+      {message && <span className={`message ${message.error ? "error" : "success"}`}>{message.text}</span>}
+      <span className="hint">
+        To restore one, run on the Mac: <code>.venv/bin/python main.py --restore-backup finance-YYYY-MM-DD.db</code>.
+        Your current data is backed up first, so restoring can't lose anything.
+      </span>
     </section>
   );
 }
@@ -297,10 +347,13 @@ export function Settings({
 
         <CsvImport onImported={onDataChanged} />
 
+        <BackupSettings />
+
         <section className="setting-row">
           <h3>Your data</h3>
           <span className="hint">
-            Everything is stored in one file on this computer. Back it up by copying it somewhere safe.
+            Everything is stored in this one file. It's never sent to a bank or finance company. The AI runs on your
+            own PC, and only ticker symbols (never amounts) go to the price service.
           </span>
           {settings && <code className="path">{settings.database}</code>}
           <div>

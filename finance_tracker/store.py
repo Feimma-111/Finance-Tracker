@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
@@ -157,6 +157,10 @@ class Store:
         current = self.conn.execute("PRAGMA user_version").fetchone()[0]
         if current > len(MIGRATIONS):
             raise RuntimeError(f"{self.path} was created by a newer version of this app")
+        if 0 < current < len(MIGRATIONS):
+            # Upgrading real data: keep a copy of it exactly as it was first.
+            from .backup import make_backup
+            make_backup(self.path, label=f"before-upgrade-v{current}")
         for version in range(current + 1, len(MIGRATIONS) + 1):
             script = MIGRATIONS[version - 1]
             try:
@@ -580,6 +584,75 @@ class Store:
                 ),
             )
         return cursor.lastrowid
+
+    def make_recurring(
+        self, tx_id: int, frequency: Frequency, *, today: date, fill_missing: bool, match_days: int = 3
+    ) -> Optional[Dict[str, int]]:
+        """Turn an existing transaction into the first occurrence of a recurring rule.
+
+        Later occurrences up to today are matched against transactions you
+        already have -- same description and type, dated within ``match_days``
+        of the expected date (banks post a day or two late) -- and *linked*
+        rather than duplicated. Occurrences with no match are filled in only
+        if ``fill_missing``; otherwise the rule just continues from the next
+        date after today. Returns {rule_id, linked, created}, or None if the
+        transaction doesn't exist. Raises ValueError if it's already recurring.
+        """
+        tx = self.get_transaction(tx_id)
+        if tx is None:
+            return None
+        if tx.recurring_id is not None:
+            raise ValueError("this transaction is already part of a recurring rule")
+
+        rule = RecurringRule(tx.description, tx.amount_cents, tx.category, frequency, tx.occurred_on, tx.kind)
+        linked = created = 0
+        with self.conn:
+            category_id = self._category_id(tx.category)
+            cursor = self.conn.execute(
+                """
+                INSERT INTO recurring (description, amount_cents, kind, category_id, frequency,
+                                       start_on, generated_count, next_due, active)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1)
+                """,
+                (tx.description, tx.amount_cents, tx.kind.value, category_id, frequency.value,
+                 tx.occurred_on.isoformat(), rule.occurrence(1).isoformat()),
+            )
+            rule_id = cursor.lastrowid
+            self.conn.execute("UPDATE transactions SET recurring_id = ? WHERE id = ?", (rule_id, tx_id))
+
+            n = 1
+            while rule.occurrence(n) <= today:
+                due = rule.occurrence(n)
+                match = self.conn.execute(
+                    """
+                    SELECT id FROM transactions
+                    WHERE lower(trim(description)) = lower(trim(?)) AND kind = ? AND recurring_id IS NULL
+                      AND occurred_on BETWEEN ? AND ?
+                    ORDER BY abs(julianday(occurred_on) - julianday(?)) LIMIT 1
+                    """,
+                    (tx.description, tx.kind.value, (due - timedelta(days=match_days)).isoformat(),
+                     (due + timedelta(days=match_days)).isoformat(), due.isoformat()),
+                ).fetchone()
+                if match:
+                    self.conn.execute("UPDATE transactions SET recurring_id = ? WHERE id = ?", (rule_id, match["id"]))
+                    linked += 1
+                elif fill_missing:
+                    self.conn.execute(
+                        """
+                        INSERT INTO transactions
+                            (description, amount_cents, kind, category_id, occurred_on, recurring_id)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (tx.description, tx.amount_cents, tx.kind.value, category_id, due.isoformat(), rule_id),
+                    )
+                    created += 1
+                n += 1
+            self.conn.execute(
+                "UPDATE recurring SET generated_count = ?, next_due = ? WHERE id = ?",
+                (n, rule.occurrence(n).isoformat(), rule_id),
+            )
+            self._mark_facts_changed()
+        return {"rule_id": rule_id, "linked": linked, "created": created}
 
     def recurring_rules(self) -> List[RecurringRule]:
         rows = self.conn.execute(

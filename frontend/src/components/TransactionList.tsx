@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type KeyboardEvent } from "react";
-import { api, type Kind, type Transaction } from "../api";
-import { money, todayIso } from "../format";
+import { api, type Frequency, type Kind, type Transaction } from "../api";
+import { dateLabel, FREQUENCIES, frequencyText, money, todayIso } from "../format";
 import { useAsync } from "../hooks";
 import { CategoryIcon } from "../icons";
 import { Sheet } from "./Sheet";
@@ -117,6 +117,8 @@ export function EditTransactionSheet({ tx, onClose, onSaved }: { tx: Transaction
   const [category, setCategory] = useState(tx.category);
   const [date, setDate] = useState(tx.occurred_on);
   const [applyToMatching, setApplyToMatching] = useState(true);
+  const [repeat, setRepeat] = useState<Frequency | "">("");
+  const [fillMissing, setFillMissing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -135,6 +137,7 @@ export function EditTransactionSheet({ tx, onClose, onSaved }: { tx: Transaction
         kind, description, amount, category, occurred_on: date,
         apply_category_to_matching: categoryChanged && matching > 0 && applyToMatching,
       });
+      if (repeat) await api.makeRecurring(tx.id, repeat, fillMissing);
       onSaved();
     } catch (e) {
       setError((e as Error).message);
@@ -199,10 +202,31 @@ export function EditTransactionSheet({ tx, onClose, onSaved }: { tx: Transaction
             Also move {matching} other “{tx.description}” transaction{matching === 1 ? "" : "s"} to this category
           </label>
         )}
-        {tx.recurring_id !== null && (
+        {tx.recurring_id !== null ? (
           <p className="hint" style={{ margin: 0 }}>
-            A recurring rule added this. Changes here apply to this one only; edit the rule on the Transactions page.
+            ↻ Part of a recurring rule. Changes here apply to this one only; edit the rule on the Transactions page.
           </p>
+        ) : (
+          <div className="field">
+            <span id="repeats-label">Repeats</span>
+            <select aria-labelledby="repeats-label" value={repeat} onChange={(e) => setRepeat(e.target.value as Frequency | "")}>
+              <option value="">Doesn't repeat</option>
+              {FREQUENCIES.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+            </select>
+            {repeat && (
+              <>
+                <span className="hint">
+                  Future “{description || tx.description}” charges will be added automatically {frequencyText(repeat)},
+                  starting from this one. Ones you already have (within a few days of each date) are linked, not
+                  duplicated.
+                </span>
+                <label className="check-row">
+                  <input type="checkbox" checked={fillMissing} onChange={(e) => setFillMissing(e.target.checked)} />
+                  Also add any missing charges between {dateLabel(date)} and today
+                </label>
+              </>
+            )}
+          </div>
         )}
         {error && <p className="message error" style={{ margin: 0 }}>{error}</p>}
         <button className="btn btn-primary" type="submit" disabled={busy}>Save</button>

@@ -25,8 +25,12 @@ GET    /api/transactions?month=      transactions, newest first
 POST   /api/transactions             add one
 GET    /api/transactions/{id}        one transaction (+ how many share its description)
 PATCH  /api/transactions/{id}        edit it (optionally recategorize matching ones)
+POST   /api/transactions/{id}/recurring   make it the start of a recurring rule
 DELETE /api/transactions/{id}        delete one
 GET    /api/transactions.csv         download everything as CSV
+GET    /api/backups                  automatic backups (made daily, and before imports)
+POST   /api/backups                  back up now
+GET    /api/backups/download         download a full copy of the database
 POST   /api/import/preview           read a CSV and show what importing would do
 POST   /api/import                   import a CSV's new transactions
 GET    /api/reports/categories       spending per category (optionally one month)
@@ -62,6 +66,8 @@ import io
 import json
 import math
 import mimetypes
+import sqlite3
+import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, Union
@@ -71,7 +77,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, importer, reports
+from . import auth, backup, importer, reports
 from .analyst import AIError, AIUnavailable, OllamaClient, month_facts, normalize_url, pick_model
 from .assistant import ask
 from .models import (
@@ -129,6 +135,11 @@ class TransactionUpdate(BaseModel):
     kind: Optional[Kind] = None
     # Also give every other transaction with the same description this category.
     apply_category_to_matching: bool = False
+
+
+class MakeRecurringIn(BaseModel):
+    frequency: Frequency
+    fill_missing: bool = False  # also add occurrences between then and today that aren't in your list
 
 
 class HoldingUpdate(BaseModel):
@@ -223,11 +234,26 @@ def create_app(
     # Create/upgrade the database once up front, so simultaneous first
     # requests don't race to create the tables.
     Store(db_path).close()
+    backup.secure_database(db_path)
 
     app = FastAPI(title="Finance Tracker API", version="1.0")
+    last_backup_day = {"day": None}
+
+    def daily_backup() -> None:
+        """At most one check per calendar day, even if the server runs for weeks."""
+        day = date.today()
+        if last_backup_day["day"] != day:
+            last_backup_day["day"] = day
+            try:
+                backup.make_backup(db_path)
+            except (OSError, backup.BackupError, sqlite3.Error) as exc:
+                print(f"Warning: daily backup failed: {exc}")
+
+    daily_backup()
 
     def get_store() -> Iterator[Store]:
         """One database connection per request, always closed afterwards."""
+        daily_backup()
         store = Store(db_path, check_same_thread=False)
         try:
             store.apply_recurring(today())
@@ -623,6 +649,18 @@ def create_app(
             also = store.set_category_for_matching(updated.description, updated.kind, updated.category) - 1
         return {**_tx_json(store.get_transaction(tx_id)), "also_updated": max(also, 0)}
 
+    @app.post("/api/transactions/{tx_id}/recurring")
+    def make_recurring(tx_id: int, body: MakeRecurringIn, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """Turn a transaction (e.g. a YouTube charge) into a recurring rule starting from it."""
+        try:
+            result = store.make_recurring(tx_id, body.frequency, today=today(), fill_missing=body.fill_missing)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        if result is None:
+            raise HTTPException(404, f"no transaction with id {tx_id}")
+        return {**_rule_json(store.get_recurring(result["rule_id"])),
+                "linked": result["linked"], "created": result["created"]}
+
     @app.delete("/api/transactions/{tx_id}", status_code=204)
     def delete_transaction(tx_id: int, store: Store = Depends(get_store)) -> Response:
         if not store.delete_transaction(tx_id):
@@ -649,9 +687,36 @@ def create_app(
         if mapping is None:
             raise HTTPException(400, "preview the file first to choose its columns")
         try:
+            backup.make_backup(db_path, label="before-import")  # imports can't be undone in one step
             return importer.import_rows(store, body.csv, mapping, options, today())
         except importer.ImportError_ as exc:
             raise HTTPException(400, str(exc)) from None
+
+    # ------------------------------------------------------------ backups
+
+    @app.get("/api/backups")
+    def list_backups(store: Store = Depends(get_store)) -> Dict[str, Any]:
+        return {"location": str(backup.backup_dir(db_path)), "backups": backup.list_backups(db_path)}
+
+    @app.post("/api/backups", status_code=201)
+    def backup_now(store: Store = Depends(get_store)) -> Dict[str, Any]:
+        try:
+            made = backup.make_backup(db_path, label="manual")
+        except (OSError, backup.BackupError, sqlite3.Error) as exc:
+            raise HTTPException(500, f"Backup failed: {exc}") from None
+        return {"name": made.name if made else None, "location": str(backup.backup_dir(db_path)),
+                "backups": backup.list_backups(db_path)}
+
+    @app.get("/api/backups/download")
+    def download_backup(store: Store = Depends(get_store)) -> Response:
+        """A fresh, consistent copy of the whole database, to save wherever you like."""
+        with tempfile.TemporaryDirectory() as folder:
+            copy = Path(folder) / "copy.db"
+            backup.copy_database(db_path, copy)
+            data = copy.read_bytes()
+        filename = f"finance-backup-{today().isoformat()}.db"
+        return Response(data, media_type="application/x-sqlite3",
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
     @app.get("/api/transactions.csv")
     def export_csv(store: Store = Depends(get_store)) -> Response:
@@ -884,7 +949,9 @@ def create_app(
 
 def create_default_app() -> FastAPI:
     """Factory for `uvicorn finance_tracker.api:create_default_app --factory --reload`."""
-    return create_app(database_path())
+    from .relocate import prepare
+
+    return create_app(prepare(database_path()))
 
 
 def serve(db_path: Union[str, Path], *, port: int = 8000, open_browser: bool = False) -> None:
