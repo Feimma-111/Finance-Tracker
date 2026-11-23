@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, type FormEvent, type KeyboardEvent } from "react";
 import { api, type NetWorthLine } from "../api";
-import { Allocation } from "../components/charts";
+import { AllocationDonut } from "../components/charts";
 import { HoldingForm } from "../components/forms";
+import { Sheet } from "../components/Sheet";
 import { assetMeta, money, quantity, seriesVar } from "../format";
 import { useAsync } from "../hooks";
 
@@ -22,8 +23,8 @@ export function Holdings({ version, onChanged }: { version: number; onChanged: (
                 {!worth.data.complete && (
                   <p className="message error">Some holdings couldn't be priced and aren't in this total.</p>
                 )}
-                <div style={{ marginTop: 16 }}>
-                  <Allocation worth={worth.data} />
+                <div style={{ marginTop: 12 }}>
+                  <AllocationDonut worth={worth.data} />
                 </div>
               </>
             ) : (
@@ -34,7 +35,7 @@ export function Holdings({ version, onChanged }: { version: number; onChanged: (
           <div className={`card ${worth.loading && worth.data ? "refreshing" : ""}`}>
             <div className="card-head">
               <h2 className="card-title">Everything you own</h2>
-              <span className="card-subtitle">Market prices refresh every 15 minutes</span>
+              <span className="card-subtitle">Click one to edit it · prices refresh every 15 minutes</span>
             </div>
             {worth.data && <HoldingsTable lines={worth.data.lines} onChanged={onChanged} />}
           </div>
@@ -51,43 +52,23 @@ export function Holdings({ version, onChanged }: { version: number; onChanged: (
   );
 }
 
+const isPriced = (line: NetWorthLine) => line.asset_type !== "cash" && line.asset_type !== "other";
+
 function HoldingsTable({ lines, onChanged }: { lines: NetWorthLine[]; onChanged: () => void }) {
-  const [editing, setEditing] = useState<number | null>(null);
-  const [draft, setDraft] = useState("");
-  const [confirming, setConfirming] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<NetWorthLine | null>(null);
 
   if (!lines.length) return <p className="empty">Nothing here yet. Add your first holding on the right.</p>;
 
-  const priced = (line: NetWorthLine) => line.asset_type !== "cash" && line.asset_type !== "other";
-
-  async function save(line: NetWorthLine) {
-    setError(null);
-    try {
-      if (priced(line)) await api.updateHolding(line.id, { quantity: Number(draft.replace(/,/g, "")) });
-      else await api.updateHolding(line.id, { value: draft });
-      setEditing(null);
-      onChanged();
-    } catch (e) {
-      setError((e as Error).message);
+  const onKey = (event: KeyboardEvent, line: NetWorthLine) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      setEditing(line);
     }
-  }
-
-  async function remove(id: number) {
-    setError(null);
-    try {
-      await api.removeHolding(id);
-      setConfirming(null);
-      onChanged();
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
+  };
 
   return (
     <div className="table-wrap">
-      {error && <p className="message error">{error}</p>}
-      <table>
+      <table className="clickable-rows">
         <thead>
           <tr>
             <th>Holding</th>
@@ -98,14 +79,20 @@ function HoldingsTable({ lines, onChanged }: { lines: NetWorthLine[]; onChanged:
             </th>
             <th className="right hide-narrow">Price</th>
             <th className="right">Value</th>
-            <th aria-label="Actions" />
           </tr>
         </thead>
         <tbody>
           {lines.map((line) => {
             const meta = assetMeta(line.asset_type);
             return (
-              <tr key={line.id}>
+              <tr
+                key={line.id}
+                tabIndex={0}
+                role="button"
+                aria-label={`Edit ${line.name}`}
+                onClick={() => setEditing(line)}
+                onKeyDown={(e) => onKey(e, line)}
+              >
                 <td>
                   <div className="holding-name">
                     {/* On narrow screens the Type column is hidden; this dot keeps the type visible. */}
@@ -123,65 +110,118 @@ function HoldingsTable({ lines, onChanged }: { lines: NetWorthLine[]; onChanged:
                   <span className="swatch" style={{ background: seriesVar(meta.slot), marginRight: 8, verticalAlign: -1 }} />
                   {meta.label}
                 </td>
-                <td className="right num">
-                  {editing === line.id && priced(line) ? (
-                    <input autoFocus onFocus={(e) => e.target.select()} value={draft} onChange={(e) => setDraft(e.target.value)} style={{ width: 110 }} aria-label="New quantity" />
-                  ) : priced(line) ? (
-                    quantity(line.quantity)
-                  ) : (
-                    ""
-                  )}
-                </td>
+                <td className="right num">{isPriced(line) ? quantity(line.quantity) : ""}</td>
                 <td className="right num hide-narrow">
-                  {line.unit_price !== null ? `$${line.unit_price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ""}
+                  {line.unit_price !== null
+                    ? `$${line.unit_price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                    : ""}
                 </td>
-                <td className="right num">
-                  {editing === line.id && !priced(line) ? (
-                    <input autoFocus onFocus={(e) => e.target.select()} value={draft} onChange={(e) => setDraft(e.target.value)} style={{ width: 120 }} aria-label="New value" />
-                  ) : line.value_cents !== null ? (
-                    money(line.value_cents)
-                  ) : (
-                    <span className="subtle">n/a</span>
-                  )}
-                </td>
-                <td>
-                  <div className="row-actions">
-                    {editing === line.id ? (
-                      <>
-                        <button className="btn btn-small btn-primary" onClick={() => save(line)}>Save</button>
-                        <button className="btn btn-small" onClick={() => setEditing(null)}>Cancel</button>
-                      </>
-                    ) : confirming === line.id ? (
-                      <>
-                        <button className="btn btn-small btn-danger" onClick={() => remove(line.id)}>Remove</button>
-                        <button className="btn btn-small" onClick={() => setConfirming(null)}>Cancel</button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          className="btn btn-small"
-                          aria-label={priced(line) ? `Edit amount of ${line.name}` : `Update value of ${line.name}`}
-                          onClick={() => {
-                            setEditing(line.id);
-                            setConfirming(null);
-                            setDraft(priced(line) ? String(line.quantity) : ((line.manual_value_cents ?? 0) / 100).toFixed(2));
-                          }}
-                        >
-                          Edit
-                        </button>
-                        <button className="btn btn-small" onClick={() => { setConfirming(line.id); setEditing(null); }} aria-label={`Remove ${line.name}`}>
-                          <span className="hide-narrow">Remove</span>
-                          <span className="show-narrow" aria-hidden="true">✕</span>
-                        </button>
-                      </>
-                    )}
-                  </div>
+                <td className="right num" style={{ whiteSpace: "nowrap" }}>
+                  {line.value_cents !== null ? money(line.value_cents) : <span className="subtle">n/a</span>}
+                  <span className="row-chevron" aria-hidden="true">›</span>
                 </td>
               </tr>
             );
           })}
         </tbody>
       </table>
+      {editing && (
+        <EditHoldingSheet
+          line={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            onChanged();
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function EditHoldingSheet({ line, onClose, onSaved }: { line: NetWorthLine; onClose: () => void; onSaved: () => void }) {
+  const priced = isPriced(line);
+  const hasSymbol = line.asset_type === "stock" || line.asset_type === "crypto";
+  const [name, setName] = useState(line.name);
+  const [symbol, setSymbol] = useState(line.symbol ?? "");
+  const [qty, setQty] = useState(String(line.quantity));
+  const [value, setValue] = useState(((line.manual_value_cents ?? 0) / 100).toFixed(2));
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.updateHolding(line.id, {
+        name,
+        ...(hasSymbol ? { symbol } : {}),
+        ...(priced ? { quantity: Number(qty.replace(/,/g, "")) } : { value }),
+      });
+      onSaved();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    setBusy(true);
+    try {
+      await api.removeHolding(line.id);
+      onSaved();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  }
+
+  const unit = line.asset_type === "gold" ? "Troy ounces" : line.asset_type === "crypto" ? "Amount owned" : "Shares";
+  return (
+    <Sheet title={`Edit ${line.name}`} onClose={onClose}>
+      <form className="form" onSubmit={save}>
+        <label className="field">
+          <span>Name</span>
+          <input type="text" value={name} onChange={(e) => setName(e.target.value)} required />
+        </label>
+        {hasSymbol && (
+          <label className="field">
+            <span>Symbol</span>
+            <input type="text" value={symbol} onChange={(e) => setSymbol(e.target.value)} autoCapitalize="characters" required />
+          </label>
+        )}
+        {priced ? (
+          <label className="field">
+            <span>{unit}</span>
+            <input type="text" inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value)} required />
+          </label>
+        ) : (
+          <label className="field">
+            <span>Current value</span>
+            <div className="money-input">
+              <i>$</i>
+              <input type="text" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} required />
+            </div>
+          </label>
+        )}
+        {error && <p className="message error" style={{ margin: 0 }}>{error}</p>}
+        <button className="btn btn-primary" type="submit" disabled={busy}>Save</button>
+        <div className="sheet-danger">
+          {confirmRemove ? (
+            <>
+              <span className="subtle">Remove {line.name}?</span>
+              <button type="button" className="btn btn-small btn-danger" onClick={remove} disabled={busy}>Remove</button>
+              <button type="button" className="btn btn-small" onClick={() => setConfirmRemove(false)}>Keep</button>
+            </>
+          ) : (
+            <button type="button" className="btn-link danger-link" onClick={() => setConfirmRemove(true)}>
+              Remove holding
+            </button>
+          )}
+        </div>
+      </form>
+    </Sheet>
   );
 }

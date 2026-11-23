@@ -119,14 +119,14 @@ legacy/main_v1.py           the original single-file version
 | GET | `/api/months` | months with data |
 | GET | `/api/categories?kind=` | category names, most used first |
 | GET / POST | `/api/transactions` | list / add |
-| DELETE | `/api/transactions/{id}` | delete |
+| GET / PATCH / DELETE | `/api/transactions/{id}` | one (with how many share its description) / edit, optionally recategorizing matching ones / delete |
 | GET | `/api/transactions.csv` | CSV download |
 | POST | `/api/import/preview` | read a CSV and show what importing would do |
 | POST | `/api/import` | import a CSV's new transactions |
 | GET | `/api/reports/categories?month=` | spending per category |
 | GET | `/api/reports/monthly` | last 12 months with how unusual each was |
 | GET / POST | `/api/holdings` | list / add |
-| PATCH / DELETE | `/api/holdings/{id}` | change quantity or value / remove |
+| PATCH / DELETE | `/api/holdings/{id}` | change name, symbol, quantity, or value / remove |
 | GET | `/api/quotes/{symbol}` | live price (used to check tickers) |
 | GET | `/api/net-worth` | value everything; records today's snapshot |
 | GET | `/api/net-worth/history` | daily snapshots for the trend chart |
@@ -153,6 +153,8 @@ model also has to reply in a fixed JSON format, so the app can display it
 reliably. "What the AI was shown" on each review displays that fact sheet.
 
 **When the PC is off**, the card says so and still shows the last saved review.
+If any transactions or covered expenses change after a review was written, the
+review says so and offers to write a new one.
 
 **Ask a question.** The card's second tab answers questions in plain English,
 such as "How much did I spend on food since August?". The model can't see the
@@ -257,10 +259,18 @@ paused. Stopping a rule keeps the transactions it already created.
   dark mode), Apple blue, filled input fields, a frosted top bar, segmented
   controls, and rounded rectangles instead of pill shapes. Every color is a CSS
   variable in `styles.css`.
-- **Charts:** ranked bars for categories instead of a pie, because lengths are
-  easier to compare than slice angles. The chart colors passed a colorblind
-  check; Apple's own palette failed it, because its yellow is too pale and its
-  green and orange look alike to colorblind viewers. Each asset type keeps the same color
+- **Editing:** click any transaction or holding to edit it in a sheet, which
+  also holds Delete or Remove. When you change a transaction's category, the
+  sheet offers to move every other transaction with the same description, which
+  is handy for cleaning up imports.
+- **Charts:** spending by category is a donut, with a switch to ranked bars,
+  which are better for comparing similar amounts. Your five biggest categories
+  of all time get the five colors, everything else is "Other", and covered
+  costs form one gray "Covered" slice that you can hide. Slices keep a fixed
+  order, so the colors that sit next to each other are the ones that passed the
+  colorblind check, and a category doesn't jump around between months. Apple's
+  own palette failed that check, because its yellow is too pale and its green
+  and orange look alike to colorblind viewers. Each asset type keeps the same color
   everywhere, and every colored mark has a text label or a "Show as table"
   option, so nothing depends on color alone. Light and dark mode follow your
   system setting.

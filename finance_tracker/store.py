@@ -253,6 +253,7 @@ class Store:
 
     def add_transaction(self, tx: Transaction) -> int:
         with self.conn:
+            self._mark_facts_changed()
             return self._insert_transaction(tx)
 
     def add_transactions(self, txs: Iterable[Transaction]) -> int:
@@ -262,7 +263,62 @@ class Store:
             for tx in txs:
                 self._insert_transaction(tx)
                 count += 1
+            if count:
+                self._mark_facts_changed()
         return count
+
+    def update_transaction(self, tx_id: int, tx: Transaction) -> bool:
+        """Replace a transaction's fields (its link to a recurring rule is kept)."""
+        with self.conn:
+            cursor = self.conn.execute(
+                """
+                UPDATE transactions
+                SET description = ?, amount_cents = ?, kind = ?, category_id = ?, occurred_on = ?
+                WHERE id = ?
+                """,
+                (tx.description.strip(), tx.amount_cents, tx.kind.value,
+                 self._category_id(tx.category), tx.occurred_on.isoformat(), tx_id),
+            )
+            if cursor.rowcount:
+                self._mark_facts_changed()
+        return cursor.rowcount > 0
+
+    def count_matching(self, description: str, kind: Kind, *, exclude_id: int) -> int:
+        """Other transactions with the same description (ignoring case) and type."""
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM transactions WHERE lower(trim(description)) = lower(trim(?)) "
+            "AND kind = ? AND id != ?",
+            (description, kind.value, exclude_id),
+        ).fetchone()[0]
+
+    def set_category_for_matching(self, description: str, kind: Kind, category: str) -> int:
+        """Give every transaction with this description and type the same category."""
+        with self.conn:
+            cursor = self.conn.execute(
+                "UPDATE transactions SET category_id = ? "
+                "WHERE lower(trim(description)) = lower(trim(?)) AND kind = ?",
+                (self._category_id(category), description, kind.value),
+            )
+            if cursor.rowcount:
+                self._mark_facts_changed()
+        return cursor.rowcount
+
+    # When anything an AI review depends on changes (transactions or covered
+    # categories), this timestamp moves, so saved reviews can say they're out of date.
+    def _mark_facts_changed(self) -> None:
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('facts_changed_at', ?) "
+            "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            (_utc_now_precise(),),
+        )
+
+    def mark_facts_changed(self) -> None:
+        with self.conn:
+            self._mark_facts_changed()
+
+    def facts_changed_at(self) -> Optional[datetime]:
+        value = self.get_meta("facts_changed_at")
+        return datetime.fromisoformat(value) if value else None
 
     def _insert_transaction(self, tx: Transaction) -> int:
         cursor = self.conn.execute(
@@ -289,6 +345,8 @@ class Store:
     def delete_transaction(self, tx_id: int) -> bool:
         with self.conn:
             cursor = self.conn.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
+            if cursor.rowcount:
+                self._mark_facts_changed()
         return cursor.rowcount > 0
 
     def transactions(
@@ -531,12 +589,14 @@ class Store:
                     "UPDATE recurring SET generated_count = ?, next_due = ? WHERE id = ?",
                     (count, due.isoformat(), row["id"]),
                 )
+            if created:
+                self._mark_facts_changed()
         return created
 
     # ------------------------------------------------------------- AI reviews
 
     def save_review(self, month: str, model: str, review: dict, facts: str) -> dict:
-        created_at = _utc_now()
+        created_at = _utc_now_precise()
         with self.conn:
             self.conn.execute(
                 "INSERT INTO ai_reviews (month, created_at, model, review, facts) VALUES (?, ?, ?, ?, ?)",
@@ -594,12 +654,18 @@ class Store:
         *,
         quantity: Optional[float] = None,
         manual_value_cents: Optional[int] = None,
+        name: Optional[str] = None,
+        symbol: Optional[str] = None,
     ) -> bool:
-        changes = {}
+        changes: dict = {}
         if quantity is not None:
             changes["quantity"] = quantity
         if manual_value_cents is not None:
             changes["manual_value_cents"] = manual_value_cents
+        if name is not None:
+            changes["name"] = name.strip()
+        if symbol is not None:
+            changes["symbol"] = symbol.strip().upper()
         if not changes:
             return False
         assignments = ", ".join(f"{column} = ?" for column in changes)  # fixed column names
@@ -697,6 +763,11 @@ def _normalize(name: str) -> str:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _utc_now_precise() -> str:
+    # Microseconds, so "changed after this review" holds even within one second.
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def _row_to_transaction(row: sqlite3.Row) -> Transaction:

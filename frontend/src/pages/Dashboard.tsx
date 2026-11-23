@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { api } from "../api";
+import { api, type CategoryReport } from "../api";
 import { AiReview } from "../components/AiReview";
-import { Allocation, CategoryBars, MonthlyChart, NetWorthChart } from "../components/charts";
+import { Allocation, CategoryBars, CategoryDonut, MonthlyChart, NetWorthChart } from "../components/charts";
 import { TransactionForm } from "../components/forms";
 import { TransactionTable } from "../components/TransactionTable";
 import { currentMonth, dateLabel, money, monthLabel, signedMoney } from "../format";
@@ -16,6 +16,14 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
   const categories = useAsync(() => api.categoryReport(month), [month, version]);
   const monthly = useAsync(api.monthlyReport, [version]);
   const recent = useAsync(() => api.transactions(), [version]);
+  // For the donut: all-time ranking (which category owns which color) and covered expenses.
+  const allTime = useAsync(() => api.categoryReport(null), [version]);
+  const settings = useAsync(api.settings, [version]);
+
+  const [chart, setChart] = useState<"pie" | "bars">(() => remembered("category-chart", "pie") as "pie" | "bars");
+  const [hideCovered, setHideCovered] = useState(() => remembered("hide-covered", "no") === "yes");
+  const covered = settings.data?.covered_categories ?? [];
+  const coveredLabel = "Covered";
 
   const monthOptions = months.data ?? [month];
 
@@ -78,7 +86,7 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
       </section>
 
       <section style={{ marginTop: 16 }}>
-        <AiReview month={month} />
+        <AiReview month={month} version={version} />
       </section>
 
       <section className="grid grid-2" style={{ marginTop: 16 }}>
@@ -86,9 +94,49 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
           <div className="card-head">
             <h2 className="card-title">Spending by category</h2>
             <span className="card-subtitle">{monthLabel(month)}</span>
+            <div className="card-action">
+              <div className="segmented" role="group" aria-label="Chart type">
+                {(["pie", "bars"] as const).map((kind) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    aria-pressed={chart === kind}
+                    onClick={() => {
+                      setChart(kind);
+                      remember("category-chart", kind);
+                    }}
+                  >
+                    {kind === "pie" ? "Pie" : "Bars"}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
+          {covered.length > 0 && (
+            <label className="check-row" style={{ marginBottom: 12 }}>
+              <input
+                type="checkbox"
+                checked={hideCovered}
+                onChange={(e) => {
+                  setHideCovered(e.target.checked);
+                  remember("hide-covered", e.target.checked ? "yes" : "no");
+                }}
+              />
+              Hide covered expenses ({covered.join(", ")}{settings.data?.covered_note ? ` · ${settings.data.covered_note}` : ""})
+            </label>
+          )}
           {categories.error && <p className="message error">{categories.error}</p>}
-          {categories.data && <CategoryBars report={categories.data} />}
+          {categories.data && (chart === "pie" ? (
+            <CategoryDonut
+              report={categories.data}
+              colorOrder={allTime.data?.items.map((i) => i.category) ?? []}
+              covered={covered}
+              coveredLabel={coveredLabel}
+              hideCovered={hideCovered}
+            />
+          ) : (
+            <CategoryBars report={hideCovered ? withoutCovered(categories.data, covered) : categories.data} />
+          ))}
         </div>
         <div className={`card ${monthly.loading && monthly.data ? "refreshing" : ""}`}>
           <div className="card-head">
@@ -119,11 +167,36 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
             <h2 className="card-title">Recent transactions</h2>
             <a className="card-action" href="#/transactions">See all</a>
           </div>
-          {recent.data && <TransactionTable items={recent.data.items.slice(0, 7)} onChanged={onChanged} compact />}
+          {recent.data && <TransactionTable items={recent.data.items.slice(0, 7)} onChanged={onChanged} />}
         </div>
       </section>
     </>
   );
+}
+
+/** The category report minus covered categories (shares recomputed for display). */
+function withoutCovered(report: CategoryReport, covered: string[]): CategoryReport {
+  const hidden = new Set(covered.map((c) => c.toLowerCase()));
+  const items = report.items.filter((i) => !hidden.has(i.category.toLowerCase()));
+  const total = items.reduce((sum, i) => sum + i.total_cents, 0);
+  return { ...report, total_cents: total, items: items.map((i) => ({ ...i, share: total ? i.total_cents / total : 0 })) };
+}
+
+// Small per-device view preferences (chart type, hide covered). Not data, so
+// localStorage is fine; any failure just means the default is used.
+function remembered(key: string, fallback: string): string {
+  try {
+    return localStorage.getItem(`finance-tracker:${key}`) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+function remember(key: string, value: string): void {
+  try {
+    localStorage.setItem(`finance-tracker:${key}`, value);
+  } catch {
+    // ignore
+  }
 }
 
 function StatTile({ label, value, note }: { label: string; value?: number; note?: string }) {

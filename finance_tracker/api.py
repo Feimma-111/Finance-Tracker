@@ -16,6 +16,8 @@ GET    /api/months                   months that have transactions (for pickers)
 GET    /api/categories?kind=         category names, most used first
 GET    /api/transactions?month=      transactions, newest first
 POST   /api/transactions             add one
+GET    /api/transactions/{id}        one transaction (+ how many share its description)
+PATCH  /api/transactions/{id}        edit it (optionally recategorize matching ones)
 DELETE /api/transactions/{id}        delete one
 GET    /api/transactions.csv         download everything as CSV
 POST   /api/import/preview           read a CSV and show what importing would do
@@ -24,7 +26,7 @@ GET    /api/reports/categories       spending per category (optionally one month
 GET    /api/reports/monthly          last 12 months with how unusual each was
 GET    /api/holdings                 your holdings
 POST   /api/holdings                 add one
-PATCH  /api/holdings/{id}            change quantity or value
+PATCH  /api/holdings/{id}            change name, symbol, quantity or value
 DELETE /api/holdings/{id}            remove one
 GET    /api/quotes/{symbol}          live price for a ticker (used to check symbols)
 GET    /api/net-worth                value everything at live prices
@@ -50,7 +52,7 @@ import csv
 import io
 import json
 import math
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, Union
 
@@ -105,9 +107,23 @@ class HoldingIn(BaseModel):
     value: Optional[str] = Field(None, description="Dollar value, for cash and other")
 
 
+class TransactionUpdate(BaseModel):
+    """Only the fields you send are changed."""
+
+    description: Optional[str] = Field(None, max_length=200)
+    amount: Optional[str] = None
+    category: Optional[str] = Field(None, max_length=60)
+    occurred_on: Optional[str] = None
+    kind: Optional[Kind] = None
+    # Also give every other transaction with the same description this category.
+    apply_category_to_matching: bool = False
+
+
 class HoldingUpdate(BaseModel):
     quantity: Optional[float] = None
     value: Optional[str] = None
+    name: Optional[str] = Field(None, max_length=80)
+    symbol: Optional[str] = Field(None, max_length=20)
 
 
 class RecurringIn(BaseModel):
@@ -262,8 +278,10 @@ def create_app(
                 raise HTTPException(400, f"no category called {', '.join(repr(c) for c in unknown)}")
             names = sorted({store.find_category(c) for c in body.covered_categories}, key=str.lower)
             store.set_setting("covered_categories", json.dumps(names))
+            store.mark_facts_changed()  # saved reviews no longer match
         if body.covered_note is not None:
             store.set_setting("covered_note", body.covered_note.strip())
+            store.mark_facts_changed()
         return settings_json(store)
 
     # --------------------------------------------------------- AI analyst
@@ -295,8 +313,16 @@ def create_app(
 
     @app.get("/api/ai/reviews/{month}")
     def saved_review(month: str, store: Store = Depends(get_store)) -> Dict[str, Any]:
-        """The most recent saved review for a month (works with the PC off)."""
-        return {"saved": store.latest_review(_month_or_400(month))}
+        """The most recent saved review for a month (works with the PC off).
+
+        ``outdated`` is true when transactions or covered expenses changed
+        after the review was written, so the card can suggest a new one.
+        """
+        saved = store.latest_review(_month_or_400(month))
+        if saved:
+            changed = store.facts_changed_at()
+            saved["outdated"] = bool(changed and changed > datetime.fromisoformat(saved["created_at"]))
+        return {"saved": saved}
 
     @app.post("/api/ai/reviews/{month}", status_code=201)
     def create_review(month: str, store: Store = Depends(get_store)) -> Dict[str, Any]:
@@ -437,6 +463,42 @@ def create_app(
         tx_id = store.add_transaction(tx)
         return _tx_json(store.get_transaction(tx_id))
 
+    @app.get("/api/transactions/{tx_id}")
+    def get_transaction(tx_id: int, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        tx = store.get_transaction(tx_id)
+        if tx is None:
+            raise HTTPException(404, f"no transaction with id {tx_id}")
+        # How many others share its description -- offered when changing the category.
+        return {**_tx_json(tx), "matching": store.count_matching(tx.description, tx.kind, exclude_id=tx_id)}
+
+    @app.patch("/api/transactions/{tx_id}")
+    def update_transaction(
+        tx_id: int, body: TransactionUpdate, store: Store = Depends(get_store)
+    ) -> Dict[str, Any]:
+        current = store.get_transaction(tx_id)
+        if current is None:
+            raise HTTPException(404, f"no transaction with id {tx_id}")
+        try:
+            cents = current.amount_cents
+            if body.amount is not None:
+                cents = parse_money(body.amount)
+                if cents <= 0:
+                    raise ValueError("amount must be greater than zero")
+            updated = Transaction(
+                description=(body.description if body.description is not None else current.description).strip(),
+                amount_cents=cents,
+                category=body.category if body.category is not None else current.category,
+                occurred_on=parse_date(body.occurred_on, today=today()) if body.occurred_on else current.occurred_on,
+                kind=body.kind or current.kind,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        store.update_transaction(tx_id, updated)
+        also = 0
+        if body.apply_category_to_matching:
+            also = store.set_category_for_matching(updated.description, updated.kind, updated.category) - 1
+        return {**_tx_json(store.get_transaction(tx_id)), "also_updated": max(also, 0)}
+
     @app.delete("/api/transactions/{tx_id}", status_code=204)
     def delete_transaction(tx_id: int, store: Store = Depends(get_store)) -> Response:
         if not store.delete_transaction(tx_id):
@@ -548,10 +610,23 @@ def create_app(
         if holding is None:
             raise HTTPException(404, f"no holding with id {holding_id}")
         try:
+            name = body.name.strip() if body.name is not None else None
+            if name is not None and not name:
+                raise ValueError("name can't be empty")
+            symbol = body.symbol.strip().upper() if body.symbol is not None else None
+            if symbol is not None and holding.asset_type is not AssetType.GOLD:
+                if not holding.asset_type.is_market_priced:
+                    raise ValueError(f"{holding.asset_type.value} holdings don't have a symbol")
+                if not symbol:
+                    raise ValueError("enter a symbol, e.g. AAPL")
+            elif holding.asset_type is AssetType.GOLD:
+                symbol = None  # gold is always priced by the same market symbol
             if holding.asset_type.is_market_priced:
-                store.update_holding(holding_id, quantity=_quantity(body.quantity))
+                quantity = _quantity(body.quantity) if body.quantity is not None else None
+                store.update_holding(holding_id, quantity=quantity, name=name, symbol=symbol)
             else:
-                store.update_holding(holding_id, manual_value_cents=_value(body.value))
+                value = _value(body.value) if body.value is not None else None
+                store.update_holding(holding_id, manual_value_cents=value, name=name)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
         return _holding_json(store.get_holding(holding_id))

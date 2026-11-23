@@ -9,9 +9,10 @@ import { AiAsk } from "./AiAsk";
  * handle "PC is off" gracefully: it always shows the last saved review, and
  * only offers to generate a new one when the PC answers.
  */
-export function AiReview({ month }: { month: string }) {
+export function AiReview({ month, version }: { month: string; version: number }) {
   const status = useAsync(api.aiStatus, []);
-  const saved = useAsync(() => api.savedReview(month), [month]);
+  // Reloads when data changes (version), so the "out of date" note appears right away.
+  const saved = useAsync(() => api.savedReview(month), [month, version]);
   const [review, setReview] = useState<SavedReview | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -99,6 +100,17 @@ export function AiReview({ month }: { month: string }) {
 
       {review ? (
         <div className={`ai-review ${busy ? "refreshing" : ""}`}>
+          {review.outdated && (
+            <div className="notice">
+              <span>
+                Your transactions or covered expenses changed after this review was written, so it may not
+                reflect them.
+              </span>
+              {online && (
+                <button className="btn btn-small" onClick={generate} disabled={busy}>Write a new review</button>
+              )}
+            </div>
+          )}
           <p className="ai-headline">{review.review.headline}</p>
           <div className="grid grid-2 ai-columns">
             <div>

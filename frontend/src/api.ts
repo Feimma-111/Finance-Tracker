@@ -102,6 +102,7 @@ export interface SavedReview {
   model: string;
   review: { headline: string; observations: string[]; suggestions: string[] };
   facts: string; // exactly what the model was shown
+  outdated?: boolean; // data or covered expenses changed after it was written
 }
 
 export interface Summary {
@@ -266,6 +267,9 @@ export const api = {
   transactions: (month?: string | null) =>
     request<{ items: Transaction[]; total: number }>(`/api/transactions${query({ month, limit: "5000" })}`),
   addTransaction: (body: NewTransaction) => request<Transaction>("/api/transactions", json("POST", body)),
+  getTransaction: (id: number) => request<Transaction & { matching: number }>(`/api/transactions/${id}`),
+  updateTransaction: (id: number, body: Partial<NewTransaction> & { apply_category_to_matching?: boolean }) =>
+    request<Transaction & { also_updated: number }>(`/api/transactions/${id}`, json("PATCH", body)),
   deleteTransaction: (id: number) => request<void>(`/api/transactions/${id}`, { method: "DELETE" }),
 
   categoryReport: (month?: string | null) => request<CategoryReport>(`/api/reports/categories${query({ month })}`),
@@ -273,7 +277,7 @@ export const api = {
 
   holdings: () => request<Holding[]>("/api/holdings"),
   addHolding: (body: NewHolding) => request<Holding>("/api/holdings", json("POST", body)),
-  updateHolding: (id: number, body: { quantity?: number; value?: string }) =>
+  updateHolding: (id: number, body: { quantity?: number; value?: string; name?: string; symbol?: string }) =>
     request<Holding>(`/api/holdings/${id}`, json("PATCH", body)),
   removeHolding: (id: number) => request<void>(`/api/holdings/${id}`, { method: "DELETE" }),
   quote: (symbol: string) => request<Quote>(`/api/quotes/${encodeURIComponent(symbol)}`),

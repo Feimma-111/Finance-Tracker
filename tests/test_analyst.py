@@ -205,6 +205,20 @@ class AnalystApiTests(unittest.TestCase):
         saved = self.client.get("/api/ai/reviews/2026-11").json()["saved"]
         self.assertEqual(saved["review"]["observations"], ["Groceries fell."])
         self.assertIn("Total spending: $50.00", saved["facts"])
+        self.assertFalse(saved["outdated"])
+
+    def test_review_goes_out_of_date(self):
+        self.client.put("/api/settings", json={"ai_url": "http://pc:11434"})
+        self.client.post("/api/ai/reviews/2026-11")
+        outdated = lambda: self.client.get("/api/ai/reviews/2026-11").json()["saved"]["outdated"]  # noqa: E731
+        self.assertFalse(outdated())
+        self.client.put("/api/settings", json={"covered_categories": ["Groceries"]})  # covered changed
+        self.assertTrue(outdated())
+        self.client.post("/api/ai/reviews/2026-11")
+        self.assertFalse(outdated())
+        self.client.post("/api/transactions", json={  # data changed
+            "description": "Gum", "amount": "2", "category": "Groceries", "occurred_on": "2026-11-04"})
+        self.assertTrue(outdated())
 
 
 if __name__ == "__main__":

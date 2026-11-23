@@ -6,6 +6,8 @@ import {
   LabelList,
   Line,
   LineChart,
+  Pie,
+  PieChart,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -266,6 +268,133 @@ export function Allocation({ worth }: { worth: NetWorth }) {
       </ul>
     </div>
   );
+}
+
+/* ------------------------------------------------------------------ donut charts
+   Slices keep a FIXED order (the order of their colors), not biggest-first:
+   the colors were checked for colorblind safety as neighbors in that order,
+   and a fixed order means a category never jumps around between months.
+   A 2px gap in the card's color separates slices, and the legend beside the
+   ring repeats every value as text. */
+
+export interface Slice {
+  key: string;
+  label: string;
+  value_cents: number;
+  color: string; // a CSS color or var(--...)
+}
+
+export function Donut({ slices, centerLabel }: { slices: Slice[]; centerLabel: string }) {
+  const t = useChartTheme();
+  const total = slices.reduce((sum, s) => sum + Math.max(s.value_cents, 0), 0);
+  if (!total) return <p className="chart-note">Nothing to show for this period.</p>;
+  const visible = slices.filter((s) => s.value_cents > 0);
+
+  return (
+    <div className="donut-layout">
+      <div className="donut" role="img" aria-label={`${centerLabel}: ${money(total)}`}>
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie
+              data={visible}
+              dataKey="value_cents"
+              nameKey="label"
+              innerRadius="64%"
+              outerRadius="100%"
+              startAngle={90}
+              endAngle={-270}
+              stroke={t.surface}
+              strokeWidth={2}
+              isAnimationActive={false}
+            >
+              {visible.map((s) => <Cell key={s.key} fill={s.color} />)}
+            </Pie>
+            <Tooltip
+              content={({ active, payload }) => {
+                const s = active && (payload?.[0]?.payload as Slice | undefined);
+                if (!s) return null;
+                return (
+                  <div className="chart-tooltip">
+                    <strong>{s.label}</strong>
+                    {money(s.value_cents)} · {percent(s.value_cents / total)}
+                  </div>
+                );
+              }}
+            />
+          </PieChart>
+        </ResponsiveContainer>
+        <div className="donut-center" aria-hidden="true">
+          <span className="subtle">{centerLabel}</span>
+          <strong>{money(total)}</strong>
+        </div>
+      </div>
+      <ul className="legend">
+        {visible.map((s) => (
+          <li key={s.key}>
+            <span className="swatch" style={{ background: s.color }} />
+            <span>{s.label}</span>
+            <span className="value">{money(s.value_cents)}</span>
+            <span className="share">{percent(s.value_cents / total)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Where your net worth sits, by asset type (fixed colors per type). */
+export function AllocationDonut({ worth }: { worth: NetWorth }) {
+  const slices = worth.by_type.map((t) => ({
+    key: t.asset_type,
+    label: assetMeta(t.asset_type).label,
+    value_cents: t.value_cents,
+    color: seriesVar(assetMeta(t.asset_type).slot),
+  }));
+  return <Donut slices={slices} centerLabel="Total" />;
+}
+
+/**
+ * Spending by category as a donut. ``colorOrder`` is the user's biggest
+ * categories of all time (covered ones excluded); the first five get the five
+ * series colors for good, the rest of the month is "Other", and covered costs
+ * (e.g. rent your parents pay) are one light-gray "Covered" slice.
+ */
+export function CategoryDonut({
+  report,
+  colorOrder,
+  covered,
+  coveredLabel,
+  hideCovered,
+}: {
+  report: CategoryReport;
+  colorOrder: string[];
+  covered: string[];
+  coveredLabel: string;
+  hideCovered: boolean;
+}) {
+  const isCovered = new Set(covered.map((c) => c.toLowerCase()));
+  const colored = colorOrder.filter((c) => !isCovered.has(c.toLowerCase())).slice(0, 5);
+  const byName = new Map(report.items.map((i) => [i.category.toLowerCase(), i.total_cents]));
+
+  const slices: Slice[] = colored.map((name, i) => ({
+    key: name,
+    label: name,
+    value_cents: byName.get(name.toLowerCase()) ?? 0,
+    color: seriesVar(i + 1),
+  }));
+  const coloredSet = new Set(colored.map((c) => c.toLowerCase()));
+  let other = 0;
+  let coveredTotal = 0;
+  for (const item of report.items) {
+    const key = item.category.toLowerCase();
+    if (isCovered.has(key)) coveredTotal += item.total_cents;
+    else if (!coloredSet.has(key)) other += item.total_cents;
+  }
+  slices.push({ key: "__other", label: "Other", value_cents: other, color: "var(--other)" });
+  if (!hideCovered) {
+    slices.push({ key: "__covered", label: coveredLabel, value_cents: coveredTotal, color: "var(--covered)" });
+  }
+  return <Donut slices={slices} centerLabel="Spent" />;
 }
 
 /* ------------------------------------------------------------------ table twin for charts */

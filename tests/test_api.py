@@ -65,6 +65,36 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.delete(f"/api/transactions/{tx_id}").status_code, 204)
         self.assertEqual(self.client.delete(f"/api/transactions/{tx_id}").status_code, 404)
 
+    def test_edit_transaction(self):
+        rent = self.add_tx(description="Rent", amount="1450", category="Lifestyle").json()
+        self.add_tx(description="rent ", amount="1450", category="Wants", occurred_on="2026-10-01")
+        self.add_tx(description="Rent", amount="100", category="Wants", kind="income")  # different type
+
+        got = self.client.get(f"/api/transactions/{rent['id']}").json()
+        self.assertEqual(got["matching"], 1)  # the other expense named "rent"; not the income
+
+        edited = self.client.patch(f"/api/transactions/{rent['id']}", json={
+            "category": "Rent", "amount": "1,451.59", "occurred_on": "2026-11-03",
+            "apply_category_to_matching": True,
+        }).json()
+        self.assertEqual(
+            (edited["category"], edited["amount_cents"], edited["occurred_on"], edited["also_updated"]),
+            ("Rent", 145159, "2026-11-03", 1),
+        )
+        cats = sorted((t["category"], t["kind"]) for t in self.client.get("/api/transactions").json()["items"])
+        self.assertEqual(cats, [("Rent", "expense"), ("Rent", "expense"), ("Wants", "income")])
+
+        # Only the fields sent change; bad values are refused with a message.
+        self.assertEqual(self.client.patch(f"/api/transactions/{rent['id']}", json={"description": "Apartment"})
+                         .json()["amount_cents"], 145159)
+        for body, message in [({"amount": "0"}, "greater than zero"), ({"occurred_on": "2030-01-01"}, "future"),
+                              ({"description": "  "}, "description")]:
+            with self.subTest(body=body):
+                response = self.client.patch(f"/api/transactions/{rent['id']}", json=body)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(message, response.json()["detail"])
+        self.assertEqual(self.client.patch("/api/transactions/9999", json={"amount": "1"}).status_code, 404)
+
     def test_validation_errors_are_readable(self):
         cases = [
             ({"amount": "ten"}, "'ten' isn't a number"),
@@ -132,6 +162,13 @@ class ApiTests(unittest.TestCase):
 
         updated = self.client.patch(f"/api/holdings/{stock['id']}", json={"quantity": 10})
         self.assertEqual(updated.json()["quantity"], 10)
+        renamed = self.client.patch(f"/api/holdings/{stock['id']}", json={"name": "Apple Inc.", "symbol": "aapl"}).json()
+        self.assertEqual((renamed["name"], renamed["symbol"], renamed["quantity"]), ("Apple Inc.", "AAPL", 10))
+        cash_id = next(h["id"] for h in self.client.get("/api/holdings").json() if h["asset_type"] == "cash")
+        self.assertEqual(self.client.patch(f"/api/holdings/{cash_id}", json={"symbol": "X"}).status_code, 400)
+        self.assertEqual(self.client.patch(f"/api/holdings/{cash_id}", json={"name": " "}).status_code, 400)
+        self.assertEqual(self.client.patch(f"/api/holdings/{cash_id}", json={"name": "Savings", "value": "2000"})
+                         .json()["manual_value_cents"], 200000)
         self.assertEqual(self.client.patch(f"/api/holdings/{stock['id']}", json={"quantity": -1}).status_code, 400)
         self.assertEqual(self.client.delete(f"/api/holdings/{stock['id']}").status_code, 204)
         self.assertEqual(len(self.client.get("/api/holdings").json()), 2)
