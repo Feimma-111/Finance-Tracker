@@ -18,6 +18,8 @@ GET    /api/transactions?month=      transactions, newest first
 POST   /api/transactions             add one
 DELETE /api/transactions/{id}        delete one
 GET    /api/transactions.csv         download everything as CSV
+POST   /api/import/preview           read a CSV and show what importing would do
+POST   /api/import                   import a CSV's new transactions
 GET    /api/reports/categories       spending per category (optionally one month)
 GET    /api/reports/monthly          last 12 months with how unusual each was
 GET    /api/holdings                 your holdings
@@ -37,6 +39,7 @@ PUT    /api/profile                  rename
 GET    /api/ai/status                is the PC with Ollama reachable? which models?
 GET    /api/ai/reviews/{month}       the last saved AI review for a month
 POST   /api/ai/reviews/{month}       generate a new review on the PC
+POST   /api/ai/ask                   answer a question (the model uses lookup tools)
 
 Recurring transactions are caught up at the start of *every* request, so
 whatever opens the app -- your laptop, your phone, a server that's always on --
@@ -54,8 +57,9 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import reports
+from . import importer, reports
 from .analyst import AIError, AIUnavailable, OllamaClient, month_facts, normalize_url, pick_model
+from .assistant import ask
 from .models import (
     GOLD_SYMBOL,
     AssetType,
@@ -120,6 +124,38 @@ class RecurringUpdate(BaseModel):
 
 
 THEMES = ("system", "light", "dark")
+
+
+class ChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=4000)
+
+
+class QuestionIn(BaseModel):
+    question: str = Field(min_length=1, max_length=500)
+    history: List[ChatTurn] = Field(default_factory=list, max_length=20)
+
+
+class ImportMapping(BaseModel):
+    date: Optional[str] = None
+    description: Optional[str] = None
+    amount: Optional[str] = None
+    debit: Optional[str] = None
+    credit: Optional[str] = None
+    category: Optional[str] = None
+    kind: Optional[str] = None
+
+
+class ImportOptions(BaseModel):
+    date_format: str = "auto"
+    positive_is: Literal["income", "expense"] = "income"
+    default_category: str = Field("Uncategorized", max_length=60)
+
+
+class ImportIn(BaseModel):
+    csv: str = Field(max_length=5_000_000, description="The file's text")
+    mapping: Optional[ImportMapping] = None  # omit on the first preview to get a suggestion
+    options: ImportOptions = Field(default_factory=ImportOptions)
 
 
 class SettingsIn(BaseModel):
@@ -266,6 +302,25 @@ def create_app(
             raise HTTPException(502, f"The model had a problem: {exc}") from None
         return store.save_review(month, model, review.to_dict(), facts)
 
+    @app.post("/api/ai/ask")
+    def ask_question(body: QuestionIn, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """Answer a question using read-only lookup tools. Takes ~2-20 seconds."""
+        client = ai_client(store)
+        try:
+            model = pick_model(client.models(), store.get_setting("ai_model", ""))
+            if model is None:
+                raise HTTPException(409, "Ollama has no models installed. On the PC, run: ollama pull qwen3:14b")
+            result = ask(
+                store, today(), body.question.strip(),
+                chat=lambda messages, tools: client.chat(model, messages, tools),
+                history=[turn.model_dump() for turn in body.history],
+            )
+        except AIUnavailable:
+            raise HTTPException(503, "Your PC is offline, or Ollama isn't running on it.") from None
+        except AIError as exc:
+            raise HTTPException(502, f"The model had a problem: {exc}") from None
+        return {**result, "model": model}
+
     # -------------------------------------------------------- recurring
 
     @app.get("/api/recurring")
@@ -374,6 +429,30 @@ def create_app(
         if not store.delete_transaction(tx_id):
             raise HTTPException(404, f"no transaction with id {tx_id}")
         return Response(status_code=204)
+
+    def import_args(body: ImportIn):
+        mapping = importer.Mapping(**body.mapping.model_dump()) if body.mapping else None
+        return mapping, importer.Options(**body.options.model_dump())
+
+    @app.post("/api/import/preview")
+    def import_preview(body: ImportIn, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """Guess the columns and show what importing would do, without saving anything."""
+        mapping, options = import_args(body)
+        try:
+            return importer.preview(store, body.csv, mapping, options, today())
+        except importer.ImportError_ as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @app.post("/api/import")
+    def import_csv(body: ImportIn, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """Save the file's new transactions (all or nothing); duplicates are skipped."""
+        mapping, options = import_args(body)
+        if mapping is None:
+            raise HTTPException(400, "preview the file first to choose its columns")
+        try:
+            return importer.import_rows(store, body.csv, mapping, options, today())
+        except importer.ImportError_ as exc:
+            raise HTTPException(400, str(exc)) from None
 
     @app.get("/api/transactions.csv")
     def export_csv(store: Store = Depends(get_store)) -> Response:

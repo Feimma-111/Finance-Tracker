@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api, CSV_EXPORT_URL, type AiStatus, type Settings as SettingsData } from "../api";
+import { CsvImport } from "../components/CsvImport";
 import type { ThemeChoice } from "../hooks";
 
 /** Where the AI analyst lives: Ollama's address on your PC, and which model to use. */
@@ -96,12 +97,14 @@ export function Settings({
   onTheme,
   onRenamed,
   onSettings,
+  onDataChanged,
 }: {
   name: string;
   settings: SettingsData | undefined;
   onTheme: (theme: ThemeChoice) => void;
   onRenamed: () => void;
   onSettings: (settings: SettingsData) => void;
+  onDataChanged: () => void;
 }) {
   const [draftName, setDraftName] = useState(name);
   const [nameMessage, setNameMessage] = useState<{ text: string; error: boolean } | null>(null);
@@ -150,6 +153,8 @@ export function Settings({
         </section>
 
         {settings && <AiSettings settings={settings} onSaved={onSettings} />}
+
+        <CsvImport onImported={onDataChanged} />
 
         <section className="setting-row">
           <h3>Your data</h3>

@@ -98,6 +98,7 @@ export default function App() {
             onTheme={changeTheme}
             onRenamed={() => setProfileVersion((v) => v + 1)}
             onSettings={setSettings}
+            onDataChanged={onChanged}
           />
         )}
       </main>

@@ -96,6 +96,8 @@ finance_tracker/
   reports.py                monthly stats, net-worth math (pure functions)
   api.py                    REST API for the web dashboard (FastAPI)
   analyst.py                AI reviews: fact sheet + Ollama client
+  assistant.py              AI questions: lookup tools, the tool loop, number check
+  importer.py               CSV import: column guessing, parsing, duplicate detection
   cli.py                    terminal menus and validated input
   legacy.py                 importer for the original JSON-lines save file
   paths.py                  where files live
@@ -119,6 +121,8 @@ legacy/main_v1.py           the original single-file version
 | GET / POST | `/api/transactions` | list / add |
 | DELETE | `/api/transactions/{id}` | delete |
 | GET | `/api/transactions.csv` | CSV download |
+| POST | `/api/import/preview` | read a CSV and show what importing would do |
+| POST | `/api/import` | import a CSV's new transactions |
 | GET | `/api/reports/categories?month=` | spending per category |
 | GET | `/api/reports/monthly` | last 12 months with how unusual each was |
 | GET / POST | `/api/holdings` | list / add |
@@ -132,6 +136,7 @@ legacy/main_v1.py           the original single-file version
 | PUT | `/api/profile` | rename |
 | GET | `/api/ai/status` | is the PC reachable, and which models it has |
 | GET / POST | `/api/ai/reviews/{month}` | last saved review / write a new one |
+| POST | `/api/ai/ask` | answer a question using lookup tools |
 
 ### AI analyst
 
@@ -148,6 +153,18 @@ model also has to reply in a fixed JSON format, so the app can display it
 reliably. "What the AI was shown" on each review displays that fact sheet.
 
 **When the PC is off**, the card says so and still shows the last saved review.
+
+**Ask a question.** The card's second tab answers questions in plain English,
+such as "How much did I spend on food since August?". The model can't see the
+database directly. It can only call read-only lookup tools in `assistant.py`:
+totals for a date range, spending by category, comparing two periods, monthly
+totals and averages, finding transactions, recurring charges, and net worth.
+Python runs each lookup and returns exact figures. The model then writes the
+answer, and "How I got this" shows every lookup it made. As a final check,
+every dollar amount and percentage in the answer is compared with what the
+lookups returned. Rounding is allowed; any other number gets a warning. Follow-up
+questions ("and in October?") keep the conversation's context. The conversation
+isn't saved.
 
 **Setup:**
 1. On the PC, install Ollama and run `ollama pull qwen3:14b` (any 8–14B model
@@ -166,6 +183,33 @@ reliably. "What the AI was shown" on each review displays that fact sheet.
    ```
 4. In the app, open **Settings → AI analyst**, enter `http://100.x.y.z:11434`,
    and choose a model.
+
+### Importing a CSV
+
+To import a CSV, go to **Settings → Import transactions** and choose the file. It can
+come from your bank, a spreadsheet, or this app's own export. Importing happens in
+two steps:
+
+1. **Preview.** The app guesses which column is which and detects the date
+   format, then shows how the first rows will be read and how many rows are
+   ready, duplicates, or problems. Every guess can be changed, and the preview
+   updates right away.
+2. **Import.** The new rows are saved all at once, or not at all if something
+   fails.
+
+What the importer handles:
+
+- **Amount layouts:** one signed column (most banks: negative means money out),
+  a column where positive means spending (many credit cards), separate debit
+  and credit columns, or an expense/income column like this app's export.
+- **Dates:** `2026-07-01`, `07/01/2026`, `1/7/26`, `25.10.2026`, `Jul 3, 2026`,
+  and more. When dates could be read two ways (03/04), you choose.
+- **Duplicates:** rows that are already saved (same date, amount, type, and
+  description) are skipped, so importing an overlapping statement is safe. Two
+  real $4.50 coffees on the same day still both count.
+- **Problem rows** are skipped and listed with their line numbers, for example
+  an unreadable amount, a future date, or a zero amount. Amounts written with a
+  decimal comma (`42,10`) are rejected rather than read as 4,210.
 
 ### Recurring transactions
 
@@ -211,9 +255,9 @@ paused. Stopping a rule keeps the transactions it already created.
 - [x] Phase 3: cash, stocks, crypto, and gold with live prices
 - [x] Phase 4: web dashboard (React + FastAPI) with charts
 - [x] Phase 5: AI analyst, with monthly reviews from a local model on your own PC
-- [ ] Next: a login before phone or Raspberry Pi access, asking questions about
-  your money ("how much on food since August?"), and Wake-on-LAN to turn the PC
-  on from the app
+- [x] Ask questions about your money, answered from exact lookups
+- [ ] Next: a login before phone or Raspberry Pi access, and Wake-on-LAN to
+  turn the PC on from the app
 
 Ideas not built yet: budgets per category, cost basis and gain/loss for investments, liabilities (loans, credit
 cards), and non-USD holdings.

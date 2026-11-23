@@ -239,20 +239,10 @@ class OllamaClient:
         payload = self._request("/api/tags", timeout=3)
         return [m["name"] for m in payload.get("models", [])]
 
-    def review(self, model: str, facts: str) -> Review:
-        body: Dict[str, Any] = {
-            "model": model,
-            "stream": False,
-            "format": REVIEW_SCHEMA,
-            # Thinking mode is off: the facts already contain every number,
-            # so the model only has to describe them, which is ~3x faster.
-            "think": False,
-            "options": {"temperature": 0.3},
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": "Review this month for me.\n\n" + facts},
-            ],
-        }
+    def _chat(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        # Thinking mode is off: every number is computed by the app, so the
+        # model only has to describe them or pick a tool, which is ~3x faster.
+        body = {"stream": False, "think": False, **body}
         try:
             payload = self._request("/api/chat", body)
         except AIError as exc:
@@ -260,7 +250,28 @@ class OllamaClient:
                 raise
             body.pop("think")  # older models don't accept the setting at all
             payload = self._request("/api/chat", body)
-        return parse_review(payload.get("message", {}).get("content", ""))
+        return payload.get("message", {})
+
+    def review(self, model: str, facts: str) -> Review:
+        message = self._chat({
+            "model": model,
+            "format": REVIEW_SCHEMA,
+            "options": {"temperature": 0.3},
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": "Review this month for me.\n\n" + facts},
+            ],
+        })
+        return parse_review(message.get("content", ""))
+
+    def chat(self, model: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """One step of a tool-using conversation; returns the model's message."""
+        return self._chat({
+            "model": model,
+            "messages": messages,
+            "tools": tools,
+            "options": {"temperature": 0.2},
+        })
 
 
 def parse_review(content: str) -> Review:

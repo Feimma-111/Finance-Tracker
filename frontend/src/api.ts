@@ -44,6 +44,56 @@ export interface AiStatus {
   error?: string;
 }
 
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AskResult {
+  answer: string;
+  model: string;
+  steps: { tool: string; arguments: Record<string, unknown>; result: Record<string, unknown> }[];
+  unverified: string[]; // numbers in the answer that no tool returned
+}
+
+export interface ImportMapping {
+  date: string | null;
+  description: string | null;
+  amount: string | null; // one signed column...
+  debit: string | null; // ...or separate money-out / money-in columns
+  credit: string | null;
+  category: string | null;
+  kind: string | null;
+}
+
+export interface ImportOptions {
+  date_format: string; // "auto" or e.g. "MM/DD/YYYY"
+  positive_is: "income" | "expense";
+  default_category: string;
+}
+
+export interface ImportPreview {
+  headers: string[];
+  mapping: ImportMapping;
+  total_rows: number;
+  date_format_choices: string[];
+  date_formats: string[]; // the formats that fit this file
+  problem: string | null; // set when the mapping can't work yet
+  date_format?: string;
+  ready?: number;
+  duplicates?: number;
+  error_count?: number;
+  errors?: string[];
+  sample?: { line: number; date: string; description: string; category: string; amount_cents: number; kind: Kind }[];
+}
+
+export interface ImportResult {
+  imported: number;
+  duplicates: number;
+  error_count: number;
+  errors: string[];
+}
+
 export interface SavedReview {
   month: string;
   created_at: string; // ISO timestamp, UTC
@@ -190,9 +240,15 @@ export const api = {
   saveSettings: (body: Partial<Pick<Settings, "theme" | "ai_url" | "ai_model">>) =>
     request<Settings>("/api/settings", json("PUT", body)),
 
+  importPreview: (csv: string, mapping?: ImportMapping, options?: ImportOptions) =>
+    request<ImportPreview>("/api/import/preview", json("POST", { csv, mapping, options })),
+  importCsv: (csv: string, mapping: ImportMapping, options: ImportOptions) =>
+    request<ImportResult>("/api/import", json("POST", { csv, mapping, options })),
+
   aiStatus: () => request<AiStatus>("/api/ai/status"),
   savedReview: (month: string) => request<{ saved: SavedReview | null }>(`/api/ai/reviews/${month}`),
   createReview: (month: string) => request<SavedReview>(`/api/ai/reviews/${month}`, { method: "POST" }),
+  ask: (question: string, history: ChatTurn[]) => request<AskResult>("/api/ai/ask", json("POST", { question, history })),
 
   recurring: () => request<RecurringRule[]>("/api/recurring"),
   addRecurring: (body: Omit<NewTransaction, "occurred_on"> & { frequency: Frequency; start_on: string }) =>

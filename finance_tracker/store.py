@@ -328,6 +328,76 @@ class Store:
         )
         return [(row["month"], row["total"]) for row in rows]
 
+    # ---------------------------------------------- date-range queries (AI tools)
+
+    def first_transaction_date(self) -> Optional[date]:
+        row = self.conn.execute("SELECT MIN(occurred_on) FROM transactions").fetchone()
+        return date.fromisoformat(row[0]) if row and row[0] else None
+
+    def total_between(
+        self, kind: Kind, start: date, end: date, *, category: Optional[str] = None
+    ) -> Tuple[int, int]:
+        """(total_cents, transaction_count) from ``start`` to ``end`` inclusive."""
+        sql = """
+            SELECT COALESCE(SUM(t.amount_cents), 0), COUNT(*)
+            FROM transactions t JOIN categories c ON c.id = t.category_id
+            WHERE t.kind = ? AND t.occurred_on BETWEEN ? AND ?
+        """
+        params: list = [kind.value, start.isoformat(), end.isoformat()]
+        if category:
+            sql += " AND c.name = ?"  # the column is COLLATE NOCASE
+            params.append(" ".join(category.split()))
+        total, count = self.conn.execute(sql, params).fetchone()
+        return total, count
+
+    def category_totals_between(self, kind: Kind, start: date, end: date) -> List[Tuple[str, int]]:
+        rows = self.conn.execute(
+            """
+            SELECT c.name, SUM(t.amount_cents) AS total
+            FROM transactions t JOIN categories c ON c.id = t.category_id
+            WHERE t.kind = ? AND t.occurred_on BETWEEN ? AND ?
+            GROUP BY c.id ORDER BY total DESC, c.name COLLATE NOCASE
+            """,
+            (kind.value, start.isoformat(), end.isoformat()),
+        )
+        return [(row["name"], row["total"]) for row in rows]
+
+    def search_transactions(
+        self,
+        *,
+        text: Optional[str] = None,
+        category: Optional[str] = None,
+        kind: Optional[Kind] = None,
+        start: Optional[date] = None,
+        end: Optional[date] = None,
+        order: str = "newest",
+        limit: int = 20,
+    ) -> List[Transaction]:
+        """Filtered transactions. ``order`` is 'newest' or 'largest'."""
+        clauses, params = [], []
+        if text:
+            clauses.append("t.description LIKE ? ESCAPE '\\'")
+            escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            params.append(f"%{escaped}%")
+        if category:
+            clauses.append("c.name = ?")
+            params.append(" ".join(category.split()))
+        if kind:
+            clauses.append("t.kind = ?")
+            params.append(kind.value)
+        if start:
+            clauses.append("t.occurred_on >= ?")
+            params.append(start.isoformat())
+        if end:
+            clauses.append("t.occurred_on <= ?")
+            params.append(end.isoformat())
+        sql = _TX_SELECT + (" WHERE " + " AND ".join(clauses) if clauses else "")
+        sql += " ORDER BY t.amount_cents DESC, t.occurred_on DESC" if order == "largest" else \
+               " ORDER BY t.occurred_on DESC, t.id DESC"
+        sql += " LIMIT ?"
+        params.append(limit)
+        return [_row_to_transaction(row) for row in self.conn.execute(sql, params)]
+
     # -------------------------------------------------------------- recurring
 
     def add_recurring(self, rule: RecurringRule) -> int:

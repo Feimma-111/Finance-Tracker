@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { api, type SavedReview } from "../api";
 import { monthLabel } from "../format";
 import { useAsync } from "../hooks";
+import { AiAsk } from "./AiAsk";
 
 /**
  * The AI review for one month. The model runs on your PC, so this card has to
@@ -14,6 +15,7 @@ export function AiReview({ month }: { month: string }) {
   const [review, setReview] = useState<SavedReview | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<"review" | "ask">("review");
 
   useEffect(() => {
     setReview(saved.data?.saved ?? null);
@@ -40,7 +42,7 @@ export function AiReview({ month }: { month: string }) {
   else if (s && !s.configured) {
     statusLine = <span className="subtle">Not set up yet. Add your PC's address in <a href="#/settings">Settings</a>.</span>;
   } else if (s && !s.reachable) {
-    statusLine = <span className="ai-status offline">● PC offline. Turn it on (with Ollama running) to write a new review.</span>;
+    statusLine = <span className="ai-status offline">● PC offline. Turn it on (with Ollama running) to use the AI. Saved reviews still show below.</span>;
   } else if (s && !s.model) {
     statusLine = <span className="ai-status offline">● Ollama has no models. On the PC run: ollama pull qwen3:14b</span>;
   } else if (s) {
@@ -50,10 +52,10 @@ export function AiReview({ month }: { month: string }) {
   return (
     <div className="card ai-card">
       <div className="card-head">
-        <h2 className="card-title">AI review</h2>
-        <span className="card-subtitle">{monthLabel(month)} · runs on your PC; your data stays private</span>
+        <h2 className="card-title">AI analyst</h2>
+        <span className="card-subtitle">Runs on your PC; your data stays private</span>
         <div className="card-action">
-          {online && (
+          {tab === "review" && online && (
             <button className="btn btn-small btn-primary" onClick={generate} disabled={busy}>
               {busy ? "Thinking…" : review ? "Write a new review" : "Review this month"}
             </button>
@@ -61,7 +63,22 @@ export function AiReview({ month }: { month: string }) {
         </div>
       </div>
 
-      <div className="ai-statusline">{statusLine}</div>
+      <div className="ai-tabs">
+        <div className="segmented" role="tablist" aria-label="AI analyst">
+          <button role="tab" type="button" aria-pressed={tab === "review"} aria-selected={tab === "review"} onClick={() => setTab("review")}>
+            Review of {monthLabel(month)}
+          </button>
+          <button role="tab" type="button" aria-pressed={tab === "ask"} aria-selected={tab === "ask"} onClick={() => setTab("ask")}>
+            Ask a question
+          </button>
+        </div>
+        <div className="ai-statusline">{statusLine}</div>
+      </div>
+
+      {tab === "ask" ? (
+        <AiAsk online={online} />
+      ) : (
+        <>
       {busy && <p className="hint">Asking the model on your PC. This usually takes 5–30 seconds.</p>}
       {error && <p className="message error">{error}</p>}
 
@@ -100,6 +117,8 @@ export function AiReview({ month }: { month: string }) {
             {online ? " Click “Review this month” to get one." : ""}
           </p>
         )
+      )}
+        </>
       )}
     </div>
   );
