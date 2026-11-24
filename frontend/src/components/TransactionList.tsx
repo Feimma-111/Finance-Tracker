@@ -3,6 +3,7 @@ import { api, type Frequency, type Kind, type Transaction } from "../api";
 import { dateLabel, FREQUENCIES, frequencyText, money, todayIso } from "../format";
 import { useAsync } from "../hooks";
 import { CategoryIcon } from "../icons";
+import { AccountField, useCashAccounts } from "./AccountField";
 import { Sheet } from "./Sheet";
 
 /**
@@ -116,6 +117,8 @@ export function EditTransactionSheet({ tx, onClose, onSaved }: { tx: Transaction
   const [amount, setAmount] = useState((tx.amount_cents / 100).toFixed(2));
   const [category, setCategory] = useState(tx.category);
   const [date, setDate] = useState(tx.occurred_on);
+  const [account, setAccount] = useState<number | null>(tx.account_id);
+  const accounts = useCashAccounts();
   const [applyToMatching, setApplyToMatching] = useState(true);
   const [repeat, setRepeat] = useState<Frequency | "">("");
   const [fillMissing, setFillMissing] = useState(false);
@@ -134,7 +137,7 @@ export function EditTransactionSheet({ tx, onClose, onSaved }: { tx: Transaction
     setError(null);
     try {
       await api.updateTransaction(tx.id, {
-        kind, description, amount, category, occurred_on: date,
+        kind, description, amount, category, occurred_on: date, account_id: account,
         apply_category_to_matching: categoryChanged && matching > 0 && applyToMatching,
       });
       if (repeat) await api.makeRecurring(tx.id, repeat, fillMissing);
@@ -196,6 +199,7 @@ export function EditTransactionSheet({ tx, onClose, onSaved }: { tx: Transaction
             {categories.data?.map((c) => <option key={c} value={c} />)}
           </datalist>
         </label>
+        <AccountField kind={kind} accounts={accounts} value={account} onChange={setAccount} />
         {categoryChanged && matching > 0 && (
           <label className="check-row">
             <input type="checkbox" checked={applyToMatching} onChange={(e) => setApplyToMatching(e.target.checked)} />

@@ -12,6 +12,7 @@ export interface Transaction {
   occurred_on: string; // YYYY-MM-DD
   kind: Kind;
   recurring_id: number | null; // set when a recurring rule created it
+  account_id: number | null; // the cash account it came out of / went into
 }
 
 export type Frequency = "weekly" | "biweekly" | "monthly" | "yearly";
@@ -26,6 +27,7 @@ export interface RecurringRule {
   start_on: string;
   next_due: string;
   active: boolean;
+  account_id: number | null;
 }
 
 export interface Settings {
@@ -33,7 +35,7 @@ export interface Settings {
   database: string;
   ai_url: string; // "" = AI analyst not set up
   ai_model: string;
-  covered_categories: string[]; // expenses someone else pays for (e.g. parents pay rent)
+  covered_categories: string[]; // expenses someone else pays for (e.g. a family member pays rent)
   covered_note: string;
 }
 
@@ -167,6 +169,7 @@ export interface Pace {
   in_progress: boolean;
   controlled: boolean; // covered categories left out
   covered_categories: string[];
+  categories: string[] | null; // only these categories (null = all)
   this_month: { day: number; cumulative_cents: number }[];
   last_month: { day: number; cumulative_cents: number }[];
   spent_cents: number;
@@ -182,16 +185,21 @@ export interface Holding {
   symbol: string | null;
   quantity: number;
   manual_value_cents: number | null;
+  bought_on: string | null; // investments: first bought
+  cost_basis_cents: number | null; // investments: total paid for the quantity held
+  balance_as_of: string | null; // cash: the day the balance was checked
 }
 
 export interface NetWorthLine extends Holding {
   value_cents: number | null;
   unit_price: number | null;
   note: string;
+  balance_change_cents: number; // cash: moved by linked transactions since balance_as_of
 }
 
 export interface NetWorth {
   total_cents: number;
+  liquid_cents: number; // every cash account together
   complete: boolean;
   change_cents: number | null;
   change_since: string | null;
@@ -218,6 +226,7 @@ export interface NewTransaction {
   category: string;
   occurred_on: string;
   kind: Kind;
+  account_id?: number | null;
 }
 
 export interface NewHolding {
@@ -226,6 +235,42 @@ export interface NewHolding {
   symbol?: string;
   quantity?: number;
   value?: string;
+  bought_on?: string;
+  avg_price?: string; // price paid per share / unit
+}
+
+export type Period = "1W" | "1M" | "3M" | "YTD" | "1Y" | "ALL";
+export interface Change {
+  change_cents: number;
+  pct: number | null;
+}
+export interface PortfolioHolding extends Holding {
+  value_cents: number | null;
+  unit_price?: number | null;
+  avg_price?: number | null;
+  total?: Change | null; // since buying (needs what you paid)
+  period?: Change | null;
+  today?: Change | null;
+  note: string;
+}
+export interface Portfolio {
+  period: Period;
+  start: string;
+  value_cents: number;
+  cost_cents: number | null;
+  total: Change | null;
+  period_change: Change | null;
+  today: Change | null;
+  holdings: PortfolioHolding[];
+  series: { date: string; value_cents: number }[];
+}
+
+/** The AI's look at your investments and the market (kept for the browser session). */
+export interface HoldingsReview {
+  created_at: string;
+  model: string;
+  review: { headline: string; holdings: string[]; market: string[]; keep_in_mind: string[] };
+  facts: string;
 }
 
 export class ApiError extends Error {
@@ -313,7 +358,8 @@ export const api = {
   focusReview: (month: string, categories: string[]) =>
     request<FocusResult>("/api/ai/focus", json("POST", { month, categories })),
   aiChanged: () => request<{ changed_at: string | null }>("/api/ai/changed"),
-  ask: (question: string, history: ChatTurn[]) => request<AskResult>("/api/ai/ask", json("POST", { question, history })),
+  ask: (question: string, history: ChatTurn[], focus?: { month: string; categories: string[] }) =>
+    request<AskResult>("/api/ai/ask", json("POST", { question, history, focus })),
 
   recurring: () => request<RecurringRule[]>("/api/recurring"),
   addRecurring: (body: Omit<NewTransaction, "occurred_on"> & { frequency: Frequency; start_on: string }) =>
@@ -344,16 +390,25 @@ export const api = {
   purchases: (category: string, month?: string | null) =>
     request<PurchaseReport>(`/api/reports/purchases${query({ category, month })}`),
   monthlyReport: () => request<MonthlyReport>("/api/reports/monthly"),
-  pace: (month: string) => request<Pace>(`/api/reports/pace${query({ month })}`),
+  pace: (month: string, categories?: string[]) => {
+    const params = new URLSearchParams({ month });
+    categories?.forEach((c) => params.append("category", c));
+    return request<Pace>(`/api/reports/pace?${params}`);
+  },
 
   holdings: () => request<Holding[]>("/api/holdings"),
   addHolding: (body: NewHolding) => request<Holding>("/api/holdings", json("POST", body)),
-  updateHolding: (id: number, body: { quantity?: number; value?: string; name?: string; symbol?: string }) =>
+  updateHolding: (
+    id: number,
+    body: { quantity?: number; value?: string; name?: string; symbol?: string; bought_on?: string; avg_price?: string },
+  ) =>
     request<Holding>(`/api/holdings/${id}`, json("PATCH", body)),
   removeHolding: (id: number) => request<void>(`/api/holdings/${id}`, { method: "DELETE" }),
   quote: (symbol: string) => request<Quote>(`/api/quotes/${encodeURIComponent(symbol)}`),
 
   netWorth: () => request<NetWorth>("/api/net-worth"),
+  portfolio: (period: Period) => request<Portfolio>(`/api/portfolio${query({ period })}`),
+  holdingsReview: () => request<HoldingsReview>("/api/ai/holdings", { method: "POST" }),
   netWorthHistory: () => request<Snapshot[]>("/api/net-worth/history"),
 };
 

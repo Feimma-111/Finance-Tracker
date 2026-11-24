@@ -1,7 +1,9 @@
-import { useSyncExternalStore } from "react";
-import { api, type AiStatus, type FocusResult } from "../api";
+import { useState, useSyncExternalStore, type FormEvent } from "react";
+import { api, type AiStatus, type ChatTurn, type FocusResult } from "../api";
+import type { ChatMessage } from "../chatStore";
 import { monthLabel } from "../format";
 import { useAsync, type AsyncState } from "../hooks";
+import { ChatThread } from "./AiAsk";
 import { AiStatusLine, isOnline, ReviewBody } from "./AiParts";
 
 /* The AI's look at only the categories chosen on the dashboard.
@@ -13,24 +15,27 @@ import { AiStatusLine, isOnline, ReviewBody } from "./AiParts";
    closing the tab clears it. */
 
 const KEY = "finance-tracker:focus-reviews";
+const CHAT_KEY = "finance-tracker:focus-chats";
 const MAX_KEPT = 20;
 
 interface FocusState {
   results: Record<string, FocusResult>;
+  chats: Record<string, ChatMessage[]>; // follow-up questions on each analysis
   busy: Record<string, true>;
+  asking: Record<string, true>;
   errors: Record<string, string>;
 }
 
-function load(): Record<string, FocusResult> {
+function load<T>(key: string): Record<string, T> {
   try {
-    const saved = JSON.parse(sessionStorage.getItem(KEY) ?? "{}");
+    const saved = JSON.parse(sessionStorage.getItem(key) ?? "{}");
     return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
   } catch {
     return {};
   }
 }
 
-let state: FocusState = { results: load(), busy: {}, errors: {} };
+let state: FocusState = { results: load(KEY), chats: load(CHAT_KEY), busy: {}, asking: {}, errors: {} };
 const listeners = new Set<() => void>();
 
 function set(next: FocusState) {
@@ -40,6 +45,10 @@ function set(next: FocusState) {
       .sort(([, a], [, b]) => b.created_at.localeCompare(a.created_at))
       .slice(0, MAX_KEPT);
     sessionStorage.setItem(KEY, JSON.stringify(Object.fromEntries(newest)));
+    const kept = new Set(newest.map(([key]) => key));
+    sessionStorage.setItem(CHAT_KEY, JSON.stringify(
+      Object.fromEntries(Object.entries(state.chats).filter(([key]) => kept.has(key))),
+    ));
   } catch {
     // storage blocked (private window): results still show until reload
   }
@@ -62,10 +71,91 @@ async function analyze(month: string, categories: string[]): Promise<void> {
   set({ ...state, busy: { ...state.busy, [key]: true }, errors: without(state.errors, key) });
   try {
     const result = await api.focusReview(month, categories);
-    set({ ...state, results: { ...state.results, [key]: result }, busy: without(state.busy, key) });
+    // A new analysis starts a new conversation.
+    set({ ...state, results: { ...state.results, [key]: result }, chats: without(state.chats, key), busy: without(state.busy, key) });
   } catch (e) {
     set({ ...state, errors: { ...state.errors, [key]: (e as Error).message }, busy: without(state.busy, key) });
   }
+}
+
+/** The analysis as plain text, so the model knows what it said before. */
+function reviewText(result: FocusResult): string {
+  const { headline, observations, suggestions } = result.review;
+  return [headline, ...observations.map((o) => `- ${o}`), "Ideas:", ...suggestions.map((s) => `- ${s}`)].join("\n");
+}
+
+/** A follow-up question on one analysis. The server rebuilds its fact sheet as context. */
+async function askFollowUp(month: string, categories: string[], question: string): Promise<void> {
+  const key = keyFor(month, categories);
+  const result = state.results[key];
+  question = question.trim();
+  if (!question || !result || state.asking[key]) return;
+  const earlier = state.chats[key] ?? [];
+  const history: ChatTurn[] = [
+    { role: "assistant", content: reviewText(result) },
+    ...earlier.filter((m) => !m.error).map(({ role, content }) => ({ role, content })),
+  ];
+  const withQuestion: ChatMessage[] = [...earlier, { role: "user", content: question }];
+  set({ ...state, chats: { ...state.chats, [key]: withQuestion }, asking: { ...state.asking, [key]: true } });
+  let reply: ChatMessage;
+  try {
+    const answer = await api.ask(question, history, { month, categories });
+    reply = { role: "assistant", content: answer.answer, result: answer };
+  } catch (e) {
+    reply = { role: "assistant", content: (e as Error).message, error: true };
+  }
+  set({ ...state, chats: { ...state.chats, [key]: [...withQuestion, reply] }, asking: without(state.asking, key) });
+}
+
+const FOLLOW_UPS = ["What should I cut back on first?", "How does this compare with last month?", "Which purchase grew the most?"];
+
+/** Ask the AI more about one analysis. */
+function FocusChat({ month, categories, online }: { month: string; categories: string[]; online: boolean }) {
+  const all = useFocusState();
+  const key = keyFor(month, categories);
+  const messages = all.chats[key] ?? [];
+  const busy = !!all.asking[key];
+  const [draft, setDraft] = useState("");
+
+  function send(question: string) {
+    if (!question.trim() || busy) return;
+    setDraft("");
+    askFollowUp(month, categories, question);
+  }
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    send(draft);
+  }
+
+  return (
+    <div className="focus-chat">
+      <h3 className="ai-heading">Ask about this</h3>
+      {messages.length > 0 ? (
+        <ChatThread messages={messages} busy={busy} />
+      ) : (
+        <div className="chips">
+          {FOLLOW_UPS.map((q) => (
+            <button key={q} type="button" className="chip" disabled={!online} onClick={() => send(q)}>{q}</button>
+          ))}
+        </div>
+      )}
+      <form className="inline-form ask-form" onSubmit={submit}>
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder={online ? "Ask a follow-up…" : "Your PC needs to be on to answer"}
+          disabled={!online}
+          maxLength={500}
+          aria-label="Follow-up question about this analysis"
+        />
+        <button className="btn btn-primary" type="submit" disabled={!online || busy || !draft.trim()}>
+          {busy ? "Asking…" : "Ask"}
+        </button>
+      </form>
+    </div>
+  );
 }
 
 function useFocusState(): FocusState {
@@ -144,6 +234,7 @@ export function FocusReview({
                 </div>
               )}
               <ReviewBody review={result.review} model={result.model} createdAt={result.created_at} facts={result.facts} />
+              <FocusChat month={month} categories={categories} online={online} />
             </div>
           ) : (
             !busy && !online && status.data && (

@@ -44,6 +44,8 @@ DELETE /api/holdings/{id}            remove one
 GET    /api/quotes/{symbol}          live price for a ticker (used to check symbols)
 GET    /api/net-worth                value everything at live prices
 GET    /api/net-worth/history        daily net-worth snapshots
+GET    /api/portfolio?period=        investment gains (since buying, over a period, today) + chart
+POST   /api/ai/holdings              the AI on your investments and the market (not saved)
 GET    /api/recurring                recurring rules (rent, subscriptions...)
 POST   /api/recurring                create one (past occurrences are filled in)
 PATCH  /api/recurring/{id}           pause/resume or change the amount
@@ -72,6 +74,7 @@ import mimetypes
 import sqlite3
 import tempfile
 from datetime import date, datetime, timedelta, timezone
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, Union
 
@@ -80,8 +83,17 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, backup, importer, reports
-from .analyst import AIError, AIUnavailable, OllamaClient, focus_facts, month_facts, normalize_url, pick_model
+from . import auth, backup, importer, portfolio, reports
+from .analyst import (
+    AIError,
+    AIUnavailable,
+    OllamaClient,
+    focus_facts,
+    holdings_facts,
+    month_facts,
+    normalize_url,
+    pick_model,
+)
 from .assistant import ask
 from .models import (
     GOLD_SYMBOL,
@@ -118,6 +130,7 @@ class TransactionIn(BaseModel):
     category: str = Field(max_length=60)
     occurred_on: Optional[str] = Field(None, description="YYYY-MM-DD; blank means today")
     kind: Kind = Kind.EXPENSE
+    account_id: Optional[int] = Field(None, description="cash account it was paid from / into")
 
 
 class HoldingIn(BaseModel):
@@ -126,6 +139,8 @@ class HoldingIn(BaseModel):
     symbol: Optional[str] = Field(None, max_length=20)
     quantity: Optional[float] = None
     value: Optional[str] = Field(None, description="Dollar value, for cash and other")
+    bought_on: Optional[str] = Field(None, description="YYYY-MM-DD first bought (investments)")
+    avg_price: Optional[str] = Field(None, max_length=30, description="average price paid per unit, e.g. '210.50'")
 
 
 class TransactionUpdate(BaseModel):
@@ -136,6 +151,7 @@ class TransactionUpdate(BaseModel):
     category: Optional[str] = Field(None, max_length=60)
     occurred_on: Optional[str] = None
     kind: Optional[Kind] = None
+    account_id: Optional[int] = None  # send null to unlink it from its account
     # Also give every other transaction with the same description this category.
     apply_category_to_matching: bool = False
 
@@ -147,9 +163,11 @@ class MakeRecurringIn(BaseModel):
 
 class HoldingUpdate(BaseModel):
     quantity: Optional[float] = None
-    value: Optional[str] = None
+    value: Optional[str] = None  # for a cash account: its balance today
     name: Optional[str] = Field(None, max_length=80)
     symbol: Optional[str] = Field(None, max_length=20)
+    bought_on: Optional[str] = None  # "" clears it
+    avg_price: Optional[str] = Field(None, max_length=30)  # "" clears it
 
 
 class RecurringIn(BaseModel):
@@ -159,6 +177,7 @@ class RecurringIn(BaseModel):
     kind: Kind = Kind.EXPENSE
     frequency: Frequency
     start_on: Optional[str] = Field(None, description="first occurrence, YYYY-MM-DD; blank = today")
+    account_id: Optional[int] = None
 
 
 class RecurringUpdate(BaseModel):
@@ -183,14 +202,15 @@ class ChatTurn(BaseModel):
     content: str = Field(max_length=4000)
 
 
-class QuestionIn(BaseModel):
-    question: str = Field(min_length=1, max_length=500)
-    history: List[ChatTurn] = Field(default_factory=list, max_length=20)
-
-
 class FocusIn(BaseModel):
     month: Optional[str] = Field(None, description="YYYY-MM; defaults to this month")
     categories: List[str] = Field(min_length=1, max_length=30)
+
+
+class QuestionIn(BaseModel):
+    question: str = Field(min_length=1, max_length=500)
+    history: List[ChatTurn] = Field(default_factory=list, max_length=20)
+    focus: Optional[FocusIn] = Field(None, description="follow-up on 'AI on these categories'")
 
 
 class ImportMapping(BaseModel):
@@ -507,16 +527,7 @@ def create_app(
         browser session. ``created_at`` lets it notice when data changes after.
         """
         month = _month_or_400(body.month) or month_of(today())
-        names: List[str] = []
-        unknown: List[str] = []
-        for raw in body.categories:
-            name = store.find_category(raw)
-            if name is None:
-                unknown.append(raw)
-            elif name not in names:
-                names.append(name)
-        if unknown:
-            raise HTTPException(400, f"no category called {', '.join(repr(c) for c in unknown)}")
+        names = _categories_or_400(store, body.categories)
         client = ai_client(store)
         try:
             model = pick_model(client.models(), store.get_setting("ai_model", ""))
@@ -545,7 +556,15 @@ def create_app(
 
     @app.post("/api/ai/ask")
     def ask_question(body: QuestionIn, store: Store = Depends(get_store)) -> Dict[str, Any]:
-        """Answer a question using read-only lookup tools. Takes ~2-20 seconds."""
+        """Answer a question using read-only lookup tools. Takes ~2-20 seconds.
+
+        With ``focus``, it's a follow-up on "AI on these categories": the same
+        fact sheet is rebuilt here and given to the model as context.
+        """
+        context = None
+        if body.focus:
+            focus_month = _month_or_400(body.focus.month) or month_of(today())
+            context = focus_facts(store, focus_month, _categories_or_400(store, body.focus.categories), today())
         client = ai_client(store)
         try:
             model = pick_model(client.models(), store.get_setting("ai_model", ""))
@@ -555,6 +574,7 @@ def create_app(
                 store, today(), body.question.strip(),
                 chat=lambda messages, tools: client.chat(model, messages, tools),
                 history=[turn.model_dump() for turn in body.history],
+                context=context,
             )
         except AIUnavailable:
             raise HTTPException(503, "Your PC is offline, or Ollama isn't running on it.") from None
@@ -581,6 +601,7 @@ def create_app(
                 frequency=body.frequency,
                 start_on=parse_date(body.start_on or "", today=today(), allow_future=True),
                 kind=body.kind,
+                account_id=_account_or_400(store, body.account_id),
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
@@ -659,6 +680,7 @@ def create_app(
                 category=body.category,
                 occurred_on=parse_date(body.occurred_on or "", today=today()),
                 kind=body.kind,
+                account_id=_account_or_400(store, body.account_id),
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
@@ -692,6 +714,10 @@ def create_app(
                 category=body.category if body.category is not None else current.category,
                 occurred_on=parse_date(body.occurred_on, today=today()) if body.occurred_on else current.occurred_on,
                 kind=body.kind or current.kind,
+                account_id=(
+                    _account_or_400(store, body.account_id)
+                    if "account_id" in body.model_fields_set else current.account_id
+                ),
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
@@ -834,22 +860,29 @@ def create_app(
 
     @app.get("/api/reports/pace")
     def spending_pace(
-        month: Optional[str] = None, controlled: bool = True, store: Store = Depends(get_store)
+        month: Optional[str] = None,
+        controlled: bool = True,
+        category: Optional[List[str]] = Query(None, description="only these categories (repeat the parameter)"),
+        store: Store = Depends(get_store),
     ) -> Dict[str, Any]:
         """Running total of spending through a month, next to the month before.
 
         With ``controlled`` (the default) and covered categories set, covered
-        costs (e.g. rent your parents pay) are left out, so one big bill
-        doesn't flatten the chart.
+        costs (e.g. rent a family member pays) are left out, so one big bill
+        doesn't flatten the chart. With ``category``, only those categories
+        count (covered ones too: you picked them).
         """
         month = _month_or_400(month) or month_of(today())
-        covered = store.covered_categories()[0] if controlled else []
+        only = _categories_or_400(store, category) if category is not None else None
+        covered = store.covered_categories()[0] if controlled and only is None else []
         previous = shift_month(month, -1)
 
         def series(m: str, through: Optional[int] = None) -> List[Dict[str, int]]:
             y, mo = (int(p) for p in m.split("-"))
             days = calendar.monthrange(y, mo)[1]
-            daily = store.daily_totals(Kind.EXPENSE, date(y, mo, 1), date(y, mo, days), exclude_categories=covered)
+            daily = store.daily_totals(
+                Kind.EXPENSE, date(y, mo, 1), date(y, mo, days), exclude_categories=covered, only_categories=only
+            )
             points, running = [], 0
             for day in range(1, min(days, through or days) + 1):
                 running += daily.get(date(y, mo, day), 0)
@@ -872,6 +905,7 @@ def create_app(
             "in_progress": month == current,
             "controlled": bool(covered),
             "covered_categories": covered,
+            "categories": only,  # null = every category
             "this_month": this_month,
             "last_month": last_month,
             "spent_cents": spent,
@@ -909,7 +943,7 @@ def create_app(
     @app.post("/api/holdings", status_code=201)
     def add_holding(body: HoldingIn, store: Store = Depends(get_store)) -> Dict[str, Any]:
         try:
-            holding = _build_holding(body)
+            holding = _build_holding(body, today())
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
         holding_id = store.add_holding(holding)
@@ -936,10 +970,30 @@ def create_app(
                 symbol = None  # gold is always priced by the same market symbol
             if holding.asset_type.is_market_priced:
                 quantity = _quantity(body.quantity) if body.quantity is not None else None
-                store.update_holding(holding_id, quantity=quantity, name=name, symbol=symbol)
+                clear = []
+                bought_on = None
+                if body.bought_on is not None:
+                    if body.bought_on.strip():
+                        bought_on = parse_date(body.bought_on, today=today())
+                    else:
+                        clear.append("bought_on")
+                cost = None
+                held = quantity if quantity is not None else holding.quantity
+                if body.avg_price is not None:
+                    if body.avg_price.strip():
+                        cost = _cost_cents(body.avg_price, held)
+                    else:
+                        clear.append("cost_basis_cents")
+                elif quantity is not None and holding.cost_basis_cents is not None and holding.quantity:
+                    # Same average price, new quantity.
+                    cost = round(holding.cost_basis_cents * quantity / holding.quantity)
+                store.update_holding(holding_id, quantity=quantity, name=name, symbol=symbol,
+                                     bought_on=bought_on, cost_basis_cents=cost, clear=clear)
             else:
                 value = _value(body.value) if body.value is not None else None
-                store.update_holding(holding_id, manual_value_cents=value, name=name)
+                # A new cash balance is "as of today": later transactions move it from there.
+                as_of = today() if value is not None and holding.asset_type is AssetType.CASH else None
+                store.update_holding(holding_id, manual_value_cents=value, name=name, balance_as_of=as_of)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
         return _holding_json(store.get_holding(holding_id))
@@ -975,7 +1029,9 @@ def create_app(
         replaces the day's number -- and only complete valuations are kept.
         """
         holdings = store.holdings()
-        report = reports.value_holdings(holdings, price_service(store).quote)
+        changes = store.account_changes(today())
+        balances = portfolio.account_balances([h for h in holdings if h.asset_type is AssetType.CASH], changes)
+        report = reports.value_holdings(holdings, price_service(store).quote, balances)
         previous = None
         if holdings and report.complete:
             previous = store.latest_snapshot_before(today())
@@ -989,6 +1045,8 @@ def create_app(
 
         return {
             "total_cents": report.total_cents,
+            # Cash accounts only: what you could spend right now.
+            "liquid_cents": sum(balances.values()),
             "complete": report.complete,
             "change_cents": report.total_cents - previous[1] if previous else None,
             "change_since": previous[0].isoformat() if previous else None,
@@ -1002,9 +1060,81 @@ def create_app(
                     "value_cents": line.value_cents,
                     "unit_price": line.unit_price,
                     "note": line.note,
+                    # Cash: how much linked transactions moved it since balance_as_of.
+                    "balance_change_cents": changes.get(line.holding.id, 0),
                 }
                 for line in report.lines
             ],
+        }
+
+    @app.get("/api/portfolio")
+    def portfolio_report(period: str = "1M", store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """Gains on your investments: since buying, over ``period``, and today,
+        plus their value over the period for the chart."""
+        if period not in portfolio.PERIODS:
+            raise HTTPException(400, f"period must be one of {', '.join(portfolio.PERIODS)}")
+        service = price_service(store)
+        now = today()
+        holdings = [h for h in store.holdings() if h.asset_type.is_market_priced]
+        report = reports.value_holdings(holdings, service.quote)
+        earliest = min((h.bought_on for h in holdings if h.bought_on), default=None)
+        start = portfolio.period_start(period, now, earliest)
+        rows: List[Dict[str, Any]] = []
+        priced: List[portfolio.HoldingReturns] = []
+        items = []
+        for line in report.lines:
+            h = line.holding
+            if line.value_cents is None:
+                rows.append({**_holding_json(h), "value_cents": None, "note": line.note})
+                continue
+            closes = service.history(h.symbol or "")
+            r = portfolio.holding_returns(h, line.value_cents, closes, start, now)
+            priced.append(r)
+            items.append((h, closes, line.value_cents))
+            rows.append({
+                **_holding_json(h),
+                "value_cents": line.value_cents,
+                "unit_price": line.unit_price,
+                "avg_price": h.cost_basis_cents / 100 / h.quantity if h.cost_basis_cents is not None and h.quantity else None,
+                "total": _return_json(r.total),
+                "period": _return_json(r.period),
+                "today": _return_json(r.today),
+                "note": line.note,
+            })
+        values = [r.value_cents for r in priced]
+        costs = [r.holding.cost_basis_cents for r in priced if r.holding.cost_basis_cents is not None]
+        return {
+            "period": period,
+            "start": start.isoformat(),
+            "value_cents": sum(values),
+            "cost_cents": sum(costs) if costs else None,
+            "total": _return_json(portfolio.combine([r.total for r in priced], values)),
+            "period_change": _return_json(portfolio.combine([r.period for r in priced], values)),
+            "today": _return_json(portfolio.combine([r.today for r in priced], values)),
+            "holdings": rows,
+            "series": [{"date": d.isoformat(), "value_cents": v} for d, v in portfolio.value_series(items, start, now)],
+        }
+
+    @app.post("/api/ai/holdings")
+    def holdings_review(store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """The model on your PC describes your investments and the market.
+        Not saved: the Holdings page keeps it for the browser session."""
+        client = ai_client(store)
+        try:
+            model = pick_model(client.models(), store.get_setting("ai_model", ""))
+            if model is None:
+                raise HTTPException(409, "Ollama has no models installed. On the PC, run: ollama pull qwen3:14b")
+            facts = holdings_facts(store, price_service(store), today())
+            review = client.holdings_review(model, facts)
+        except AIUnavailable:
+            raise HTTPException(503, "Your PC is offline, or Ollama isn't running on it.") from None
+        except AIError as exc:
+            raise HTTPException(502, f"The model had a problem: {exc}") from None
+        return {
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+            "model": model,
+            "review": review,
+            "facts": facts,
         }
 
     @app.get("/api/net-worth/history")
@@ -1052,6 +1182,21 @@ def serve(db_path: Union[str, Path], *, port: int = 8000, open_browser: bool = F
 # ------------------------------------------------------------------ helpers
 
 
+def _categories_or_400(store: Store, raw: List[str]) -> List[str]:
+    """Stored category names for ``raw`` (any capitalization), without repeats."""
+    names: List[str] = []
+    unknown: List[str] = []
+    for text in raw:
+        name = store.find_category(text)
+        if name is None:
+            unknown.append(text)
+        elif name not in names:
+            names.append(name)
+    if unknown:
+        raise HTTPException(400, f"no category called {', '.join(repr(c) for c in unknown)}")
+    return names
+
+
 def _month_or_400(month: Optional[str]) -> Optional[str]:
     if not month:
         return None
@@ -1074,17 +1219,44 @@ def _value(value: Optional[str]) -> int:
     return cents
 
 
-def _build_holding(body: HoldingIn) -> Holding:
-    if body.asset_type is AssetType.GOLD:
-        return Holding(AssetType.GOLD, (body.name or "Gold").strip() or "Gold",
-                       _quantity(body.quantity), symbol=GOLD_SYMBOL)
+def _cost_cents(avg_price: str, quantity: float) -> int:
+    """Total paid = average price per unit x quantity, in cents. The price is
+    kept as a Decimal (crypto can cost fractions of a cent per unit)."""
+    try:
+        price = Decimal(avg_price.strip().replace("$", "").replace(",", ""))
+    except InvalidOperation:
+        raise ValueError("enter the price paid as a number, e.g. 210.50") from None
+    if not price.is_finite() or price < 0:
+        raise ValueError("the price paid can't be negative")
+    return int((price * Decimal(str(quantity)) * 100).to_integral_value(rounding=ROUND_HALF_UP))
+
+
+def _account_or_400(store: Store, account_id: Optional[int]) -> Optional[int]:
+    if account_id is not None and not store.is_cash_account(account_id):
+        raise HTTPException(400, "that account isn't one of your cash accounts")
+    return account_id
+
+
+def _return_json(r: Optional[portfolio.Return]) -> Optional[Dict[str, Any]]:
+    return {"change_cents": r.change_cents, "pct": r.pct} if r else None
+
+
+def _build_holding(body: HoldingIn, today: date) -> Holding:
+    bought_on = parse_date(body.bought_on, today=today) if body.bought_on and body.bought_on.strip() else None
     if body.asset_type.is_market_priced:
+        quantity = _quantity(body.quantity)
+        cost = _cost_cents(body.avg_price, quantity) if body.avg_price and body.avg_price.strip() else None
+        if body.asset_type is AssetType.GOLD:
+            return Holding(AssetType.GOLD, (body.name or "Gold").strip() or "Gold", quantity, symbol=GOLD_SYMBOL,
+                           bought_on=bought_on, cost_basis_cents=cost)
         symbol = (body.symbol or "").strip().upper()
         if not symbol:
             raise ValueError("enter a symbol, e.g. AAPL")
         name = (body.name or "").strip() or symbol
-        return Holding(body.asset_type, name, _quantity(body.quantity), symbol=symbol)
-    return Holding(body.asset_type, (body.name or "").strip(), manual_value_cents=_value(body.value))
+        return Holding(body.asset_type, name, quantity, symbol=symbol, bought_on=bought_on, cost_basis_cents=cost)
+    as_of = today if body.asset_type is AssetType.CASH else None
+    return Holding(body.asset_type, (body.name or "").strip(), manual_value_cents=_value(body.value),
+                   balance_as_of=as_of)
 
 
 def _tx_json(tx: Transaction) -> Dict[str, Any]:
@@ -1096,6 +1268,7 @@ def _tx_json(tx: Transaction) -> Dict[str, Any]:
         "occurred_on": tx.occurred_on.isoformat(),
         "kind": tx.kind.value,
         "recurring_id": tx.recurring_id,
+        "account_id": tx.account_id,
     }
 
 
@@ -1110,6 +1283,7 @@ def _rule_json(rule: RecurringRule) -> Dict[str, Any]:
         "start_on": rule.start_on.isoformat(),
         "next_due": rule.next_due.isoformat(),
         "active": rule.active,
+        "account_id": rule.account_id,
     }
 
 
@@ -1121,4 +1295,7 @@ def _holding_json(h: Holding) -> Dict[str, Any]:
         "symbol": h.symbol,
         "quantity": h.quantity,
         "manual_value_cents": h.manual_value_cents,
+        "bought_on": h.bought_on.isoformat() if h.bought_on else None,
+        "cost_basis_cents": h.cost_basis_cents,
+        "balance_as_of": h.balance_as_of.isoformat() if h.balance_as_of else None,
     }

@@ -69,6 +69,7 @@ class Transaction:
     kind: Kind = Kind.EXPENSE
     id: Optional[int] = None
     recurring_id: Optional[int] = None  # set when a recurring rule created it
+    account_id: Optional[int] = None    # the cash account (a cash Holding) it was paid from / into
 
     def __post_init__(self) -> None:
         _check_entry(self.description, self.amount_cents, self.category)
@@ -93,6 +94,7 @@ class RecurringRule:
     generated_count: int = 0
     active: bool = True
     id: Optional[int] = None
+    account_id: Optional[int] = None  # cash account its transactions use
 
     def __post_init__(self) -> None:
         _check_entry(self.description, self.amount_cents, self.category)
@@ -128,7 +130,10 @@ class Holding:
     """Something you own.
 
     Market-priced holdings (stock, crypto, gold) are worth quantity x live price.
-    Cash and "other" holdings carry a value you set by hand.
+    ``bought_on`` and ``cost_basis_cents`` (the total paid for the quantity
+    held) give gain/loss. Cash and "other" holdings carry a value you set by
+    hand; for a cash account, ``balance_as_of`` is the day that value was
+    checked, and transactions linked to it after that day move it.
     """
 
     asset_type: AssetType
@@ -137,12 +142,17 @@ class Holding:
     symbol: Optional[str] = None
     manual_value_cents: Optional[int] = None
     id: Optional[int] = None
+    bought_on: Optional[date] = None
+    cost_basis_cents: Optional[int] = None
+    balance_as_of: Optional[date] = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("name can't be empty")
         if self.quantity < 0:
             raise ValueError("quantity can't be negative")
+        if self.cost_basis_cents is not None and self.cost_basis_cents < 0:
+            raise ValueError("the amount paid can't be negative")
         if self.asset_type.is_market_priced:
             if not self.symbol:
                 raise ValueError(f"{self.asset_type.value} holdings need a market symbol")

@@ -18,8 +18,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Tuple
+from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from typing import Any, Callable, Dict, List, Optional, Tuple
+from xml.etree import ElementTree
 
 try:  # Python 3.8+
     from typing import Protocol
@@ -74,6 +76,56 @@ class YahooPriceProvider:
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise PriceUnavailable(f"couldn't reach the price service ({exc})") from exc
         return self.parse(symbol, payload)
+
+    HISTORY_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range}&interval=1d"
+    NEWS_URL = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+
+    def _get(self, url: str, limit: int = 2_000_000) -> bytes:
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (personal finance tracker)"})
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout, context=self.tls) as response:
+                return response.read(limit)
+        except urllib.error.HTTPError as exc:
+            raise PriceUnavailable(f"price service returned HTTP {exc.code}") from exc
+        except (urllib.error.URLError, OSError) as exc:
+            raise PriceUnavailable(f"couldn't reach the price service ({exc})") from exc
+
+    def history(self, symbol: str, range_: str = "10y") -> Tuple[str, List[Tuple[date, float]]]:
+        """(currency, [(day, close), ...]) of daily closes, oldest first."""
+        url = self.HISTORY_URL.format(symbol=urllib.parse.quote(symbol, safe=""), range=range_)
+        try:
+            payload = json.loads(self._get(url))
+            result = payload["chart"]["result"][0]
+            meta = result["meta"]
+            offset = int(meta.get("gmtoffset") or 0)  # the exchange's local day, not UTC
+            closes = result["indicators"]["quote"][0]["close"]
+            days: Dict[date, float] = {}
+            for stamp, close in zip(result.get("timestamp") or [], closes):
+                if close is not None and close > 0:
+                    days[datetime.fromtimestamp(stamp + offset, timezone.utc).date()] = float(close)
+            currency = str(meta.get("currency") or "USD").upper()
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise PriceUnavailable(f"no price history for '{symbol}'") from exc
+        return currency, sorted(days.items())
+
+    def headlines(self, symbol: str, limit: int = 5) -> List[Tuple[date, str]]:
+        """Recent news titles about ``symbol`` (third-party text: show it, never obey it)."""
+        url = self.NEWS_URL.format(symbol=urllib.parse.quote(symbol, safe=""))
+        try:
+            root = ElementTree.fromstring(self._get(url, limit=500_000))
+        except ElementTree.ParseError as exc:
+            raise PriceUnavailable(f"couldn't read news for '{symbol}'") from exc
+        items: List[Tuple[date, str]] = []
+        for item in root.iter("item"):
+            title = " ".join((item.findtext("title") or "").split())[:200]
+            try:
+                published = parsedate_to_datetime(item.findtext("pubDate") or "").date()
+            except (TypeError, ValueError):
+                continue
+            if title:
+                items.append((published, title))
+        items.sort(key=lambda pair: pair[0], reverse=True)
+        return items[:limit]
 
     @staticmethod
     def parse(symbol: str, payload: Any) -> Tuple[float, str]:
@@ -132,3 +184,28 @@ class PriceService:
             raise
         self.store.save_price(symbol, price, currency, now)
         return Quote(symbol, price, currency, now)
+
+    def history(self, symbol: str, max_age: timedelta = timedelta(hours=12)) -> List[Tuple[date, float]]:
+        """Daily closes for ``symbol``, oldest first, refreshed at most every
+        12 hours. Offline (or a provider without history), the saved closes
+        are used; with none saved, the list is empty."""
+        symbol = symbol.upper()
+        fetched = self.store.price_history_fetched(symbol)
+        fetch = getattr(self.provider, "history", None)
+        if fetch is not None and (fetched is None or self.clock() - fetched[0] >= max_age):
+            try:
+                currency, closes = fetch(symbol)
+                self.store.save_price_history(symbol, closes, currency, self.clock())
+            except PriceUnavailable:
+                pass
+        return self.store.price_history(symbol)
+
+    def headlines(self, symbol: str, limit: int = 5) -> List[Tuple[date, str]]:
+        """Recent news titles, or none if the provider has no news or is offline."""
+        fetch = getattr(self.provider, "headlines", None)
+        if fetch is None:
+            return []
+        try:
+            return fetch(symbol, limit)
+        except PriceUnavailable:
+            return []

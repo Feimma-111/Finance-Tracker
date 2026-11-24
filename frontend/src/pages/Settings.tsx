@@ -242,7 +242,7 @@ function CoveredSettings({ settings, onSaved }: { settings: SettingsData; onSave
     <section className="setting-row">
       <h3>Covered by someone else</h3>
       <span className="hint">
-        Pick expenses you don't pay for yourself, like rent or tuition your parents cover. They still count in your
+        Pick expenses you don't pay for yourself, like rent a family member pays or costs an employer reimburses. They still count in your
         totals, but the AI won't suggest cutting them and judges your month on the spending you control.
       </span>
       {categories.data?.length ? (
@@ -262,7 +262,7 @@ function CoveredSettings({ settings, onSaved }: { settings: SettingsData; onSave
         <input
           type="text"
           value={note}
-          placeholder="My parents pay for these"
+          placeholder="Family pays for these"
           maxLength={120}
           onChange={(e) => setNote(e.target.value)}
           onBlur={() => note !== settings.covered_note && save({ covered_note: note })}

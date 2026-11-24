@@ -119,3 +119,100 @@ class PersistenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AccountAndHistoryTests(unittest.TestCase):
+    """Schema v5: cash accounts that follow linked transactions, costs, price history."""
+
+    def setUp(self):
+        self.store = Store(":memory:")
+
+    def tearDown(self):
+        self.store.close()
+
+    def test_account_changes_count_linked_transactions_after_the_check(self):
+        s = self.store
+        checking = s.add_holding(Holding(AssetType.CASH, "Checking", manual_value_cents=100000,
+                                         balance_as_of=date(2026, 11, 20)))
+        other = s.add_holding(Holding(AssetType.CASH, "Cash jar", manual_value_cents=5000))  # never checked
+        add = lambda desc, cents, day, kind=Kind.EXPENSE, account=checking: s.add_transaction(  # noqa: E731
+            Transaction(desc, cents, "Food", day, kind, account_id=account))
+        add("Before the check", 999, date(2026, 11, 20))             # added after, but dated that day
+        add("Back-dated", 888, date(2026, 11, 19))                   # already in the bank's balance
+        add("Lunch", 1500, date(2026, 11, 21))
+        add("Paycheck", 50000, date(2026, 11, 22), Kind.INCOME)
+        add("Next week", 2000, date(2026, 11, 30))                   # not yet
+        add("Not linked", 700, date(2026, 11, 21), account=None)
+        add("Jar", 300, date(2026, 11, 21), account=other)            # its account has no check date
+        self.assertEqual(s.account_changes(date(2026, 11, 23)), {checking: 48500 - 999})
+
+        # Updating the balance starts over from now: earlier entries are in it.
+        s.update_holding(checking, manual_value_cents=150000, balance_as_of=date(2026, 11, 22))
+        self.assertEqual(s.account_changes(date(2026, 11, 23)), {})
+        add("Same-day coffee", 450, date(2026, 11, 22))              # logged after the update
+        self.assertEqual(s.account_changes(date(2026, 11, 23)), {checking: -450})
+        self.assertTrue(s.is_cash_account(checking))
+        stock = s.add_holding(Holding(AssetType.STOCK, "Apple", 1, symbol="AAPL"))
+        self.assertFalse(s.is_cash_account(stock))
+
+        # Removing an account keeps its transactions, unlinked.
+        s.remove_holding(checking)
+        self.assertTrue(all(t.account_id is None for t in s.transactions() if t.description != "Jar"))
+
+    def test_holding_costs_round_trip_and_clear(self):
+        s = self.store
+        hid = s.add_holding(Holding(AssetType.STOCK, "Apple", 10, symbol="AAPL",
+                                    bought_on=date(2025, 3, 10), cost_basis_cents=210000))
+        h = s.get_holding(hid)
+        self.assertEqual((h.bought_on, h.cost_basis_cents), (date(2025, 3, 10), 210000))
+        s.update_holding(hid, clear=["bought_on", "cost_basis_cents"])
+        h = s.get_holding(hid)
+        self.assertEqual((h.bought_on, h.cost_basis_cents), (None, None))
+        with self.assertRaises(ValueError):
+            s.update_holding(hid, clear=["name"])
+
+    def test_price_history_round_trip(self):
+        when = datetime(2026, 11, 23, 12, 0, tzinfo=timezone.utc)
+        self.store.save_price_history("aapl", [(date(2026, 11, 20), 120.0), (date(2026, 11, 19), 118.5)], "USD", when)
+        self.store.save_price_history("AAPL", [(date(2026, 11, 20), 121.0)], "USD", when)  # corrected close
+        self.assertEqual(self.store.price_history("AAPL"),
+                         [(date(2026, 11, 19), 118.5), (date(2026, 11, 20), 121.0)])
+        self.assertEqual(self.store.price_history_fetched("AAPL"), (when, "USD"))
+
+    def test_recurring_rules_keep_their_account(self):
+        from finance_tracker.models import Frequency, RecurringRule
+        s = self.store
+        account = s.add_holding(Holding(AssetType.CASH, "Checking", manual_value_cents=0, balance_as_of=date(2026, 1, 1)))
+        s.add_recurring(RecurringRule("Phone", 4500, "Utilities", Frequency.MONTHLY, date(2026, 9, 5),
+                                      account_id=account))
+        s.apply_recurring(date(2026, 11, 23))
+        self.assertEqual({t.account_id for t in s.transactions()}, {account})
+        self.assertEqual(s.account_changes(date(2026, 11, 23)), {account: -13500})
+
+
+class UpgradeTests(unittest.TestCase):
+    def test_version_4_database_upgrades_with_data_intact(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "finance.db")
+            conn = sqlite3.connect(path)
+            for version, script in enumerate(MIGRATIONS[:4], start=1):
+                conn.executescript(f"BEGIN;\n{script}\nPRAGMA user_version = {version};\nCOMMIT;")
+            conn.execute("INSERT INTO categories (name) VALUES ('Food')")
+            conn.execute("INSERT INTO transactions (description, amount_cents, kind, category_id, occurred_on) "
+                         "VALUES ('Lunch', 1200, 'expense', 1, '2026-11-02')")
+            conn.execute("INSERT INTO holdings (asset_type, name, quantity, manual_value_cents) "
+                         "VALUES ('cash', 'Checking', 1, 250000)")
+            conn.commit()
+            conn.close()
+
+            store = Store(path)
+            try:
+                self.assertEqual(store.conn.execute("PRAGMA user_version").fetchone()[0], len(MIGRATIONS))
+                (lunch,) = store.transactions()
+                self.assertEqual((lunch.description, lunch.account_id), ("Lunch", None))
+                (checking,) = store.holdings()
+                self.assertEqual((checking.manual_value_cents, checking.balance_as_of), (250000, None))
+            finally:
+                store.close()
+            # The upgrade made a safety backup first.
+            self.assertTrue(os.listdir(os.path.join(folder, "backups")))

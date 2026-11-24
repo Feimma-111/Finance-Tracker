@@ -392,16 +392,31 @@ def system_prompt(store: Store, today: date) -> str:
     )
 
 
+CONTEXT_PROMPT = """\
+The user is asking follow-up questions about an analysis the app showed them. \
+These facts were computed by the app and are exact, so you may quote them \
+directly. For anything they don't cover, use the tools.
+
+{context}"""
+
+
 def ask(
     store: Store,
     today: date,
     question: str,
     chat: Callable[[List[Dict[str, Any]], List[Dict[str, Any]]], Dict[str, Any]],
     history: Sequence[Dict[str, str]] = (),
+    context: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Run the question -> tools -> answer loop. ``chat`` sends messages to the model."""
+    """Run the question -> tools -> answer loop. ``chat`` sends messages to the model.
+
+    ``context`` is an app-computed fact sheet the conversation is about (e.g.
+    the one behind "AI on these categories"). Its numbers count as checked.
+    """
     tools = Tools(store, today)
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt(store, today)}]
+    if context:
+        messages.append({"role": "system", "content": CONTEXT_PROMPT.format(context=context)})
     for turn in list(history)[-MAX_HISTORY_MESSAGES:]:
         if turn.get("role") in ("user", "assistant") and turn.get("content"):
             messages.append({"role": turn["role"], "content": str(turn["content"])[:2000]})
@@ -416,7 +431,7 @@ def ask(
             if not answer:
                 break
             return {"answer": answer, "steps": steps,
-                    "unverified": unverified_numbers(answer, steps)}
+                    "unverified": unverified_numbers(answer, steps, extra=context or "")}
         messages.append({"role": "assistant", "content": reply.get("content") or "", "tool_calls": calls})
         for call in calls:
             function = call.get("function", {})
@@ -449,13 +464,14 @@ def _percent(text: str) -> Decimal:
     return abs(Decimal(text.replace("%", "").replace(" ", "")))
 
 
-def unverified_numbers(answer: str, steps: Sequence[Dict[str, Any]]) -> List[str]:
-    """Dollar amounts / percentages in ``answer`` that no tool returned.
+def unverified_numbers(answer: str, steps: Sequence[Dict[str, Any]], extra: str = "") -> List[str]:
+    """Dollar amounts / percentages in ``answer`` that no tool returned (nor
+    ``extra``, an app-computed fact sheet).
 
     Rounding is allowed: "$1,084" matches a tool's "$1,084.27", and "16%"
     matches "15.9%". Anything else was not computed by the app.
     """
-    blob = json.dumps([s["result"] for s in steps])
+    blob = json.dumps([s["result"] for s in steps]) + extra
     known_cents: Set[int] = {abs(_money_cents(m)) for m in _MONEY.findall(blob)}
     known_pcts: Set[Decimal] = {_percent(p) for p in _PERCENT.findall(blob)}
 

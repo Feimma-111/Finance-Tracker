@@ -182,6 +182,13 @@ class ApiTests(unittest.TestCase):
         october = self.client.get("/api/reports/pace", params={"month": "2026-10"}).json()
         self.assertEqual((october["through_day"], october["spent_cents"], october["in_progress"]), (31, 15000, False))
 
+        # Only some categories: covered ones count when you pick them yourself.
+        rent = self.client.get("/api/reports/pace", params={"category": ["rent"]}).json()
+        self.assertEqual((rent["categories"], rent["spent_cents"], rent["controlled"]), (["Rent"], 145000, False))
+        both = self.client.get("/api/reports/pace", params={"category": ["Rent", "Food"]}).json()
+        self.assertEqual((both["spent_cents"], both["last_month_same_point_cents"]), (150000, 15000))
+        self.assertEqual(self.client.get("/api/reports/pace", params={"category": ["Nope"]}).status_code, 400)
+
     def test_csv_export(self):
         self.add_tx()
         response = self.client.get("/api/transactions.csv")
@@ -297,3 +304,97 @@ class ApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(TestClient is None, "install requirements.txt to test the web API")
+class AccountsAndPortfolioTests(unittest.TestCase):
+    """Cash accounts that follow transactions, what investments cost, and gains."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        # Fri Nov 20 is the last close before Sat Nov 22.
+        self.provider = FakeProvider(
+            {"AAPL": 125.0},
+            histories={"AAPL": [(date(2026, 10, 22), 100.0), (date(2026, 11, 13), 110.0),
+                                (date(2026, 11, 20), 120.0)]},
+        )
+        app = create_app(os.path.join(self.folder.name, "finance.db"), provider=self.provider,
+                         today=lambda: TODAY, static_dir=None)
+        self.client = TestClient(app)
+        sign_in(self.client)
+
+    def tearDown(self):
+        self.client.close()
+        self.folder.cleanup()
+
+    def test_cash_accounts_follow_linked_transactions(self):
+        c = self.client
+        checking = c.post("/api/holdings", json={"asset_type": "cash", "name": "Checking", "value": "1,000"}).json()
+        self.assertEqual(checking["balance_as_of"], TODAY.isoformat())
+        c.post("/api/holdings", json={"asset_type": "cash", "name": "Savings", "value": "5000"})
+        add = lambda **kw: c.post("/api/transactions", json={  # noqa: E731
+            "description": "Lunch", "amount": "25.50", "category": "Food", "occurred_on": TODAY.isoformat(), **kw})
+        lunch = add(account_id=checking["id"]).json()
+        self.assertEqual(lunch["account_id"], checking["id"])
+        add(description="Paycheck", amount="400", kind="income", category="Salary", account_id=checking["id"])
+        add(description="Rent (paid by family)", amount="1200")  # not from my accounts
+        self.assertEqual(add(account_id=999).status_code, 400)
+
+        worth = c.get("/api/net-worth").json()
+        self.assertEqual(worth["liquid_cents"], 100000 - 2550 + 40000 + 500000)
+        line = next(l for l in worth["lines"] if l["name"] == "Checking")
+        self.assertEqual((line["value_cents"], line["balance_change_cents"]), (137450, 37450))
+
+        # Unlinking a transaction takes it out again; leaving account_id out keeps it.
+        c.patch(f"/api/transactions/{lunch['id']}", json={"description": "Big lunch"})
+        self.assertEqual(c.get(f"/api/transactions/{lunch['id']}").json()["account_id"], checking["id"])
+        c.patch(f"/api/transactions/{lunch['id']}", json={"account_id": None})
+        self.assertEqual(c.get("/api/net-worth").json()["liquid_cents"], 100000 + 40000 + 500000)
+
+        # A new balance starts over from now.
+        c.patch(f"/api/holdings/{checking['id']}", json={"value": "1500"})
+        self.assertEqual(c.get("/api/net-worth").json()["liquid_cents"], 150000 + 500000)
+
+        stock = c.post("/api/holdings", json={"asset_type": "stock", "symbol": "AAPL", "quantity": 1}).json()
+        self.assertEqual(add(account_id=stock["id"]).status_code, 400)  # not a cash account
+
+    def test_recurring_rules_use_the_account(self):
+        checking = self.client.post("/api/holdings", json={"asset_type": "cash", "name": "Checking", "value": "100"}).json()
+        rule = self.client.post("/api/recurring", json={
+            "description": "Phone", "amount": "45", "category": "Utilities", "frequency": "monthly",
+            "start_on": TODAY.isoformat(), "account_id": checking["id"]}).json()
+        self.assertEqual(rule["account_id"], checking["id"])
+        self.assertEqual(self.client.get("/api/net-worth").json()["liquid_cents"], 10000 - 4500)
+
+    def test_investment_costs_and_gains(self):
+        c = self.client
+        apple = c.post("/api/holdings", json={
+            "asset_type": "stock", "symbol": "aapl", "quantity": 10, "bought_on": "2026-01-05", "avg_price": "$80"}).json()
+        self.assertEqual((apple["bought_on"], apple["cost_basis_cents"]), ("2026-01-05", 80000))
+        self.assertEqual(c.post("/api/holdings", json={
+            "asset_type": "stock", "symbol": "X", "quantity": 1, "avg_price": "lots"}).status_code, 400)
+        self.assertEqual(c.post("/api/holdings", json={
+            "asset_type": "stock", "symbol": "X", "quantity": 1, "bought_on": "2030-01-01"}).status_code, 400)
+
+        report = c.get("/api/portfolio", params={"period": "1M"}).json()  # since Oct 22: $100
+        self.assertEqual(report["value_cents"], 125000)
+        self.assertEqual(report["total"], {"change_cents": 45000, "pct": 56.2})
+        self.assertEqual(report["period_change"], {"change_cents": 25000, "pct": 25.0})
+        self.assertEqual(report["today"], {"change_cents": 5000, "pct": 4.2})
+        row = report["holdings"][0]
+        self.assertEqual(row["avg_price"], 80.0)
+        self.assertEqual(report["series"][-1], {"date": TODAY.isoformat(), "value_cents": 125000})
+        self.assertEqual(report["series"][0], {"date": "2026-10-22", "value_cents": 100000})
+        self.assertEqual(c.get("/api/portfolio", params={"period": "5Y"}).status_code, 400)
+
+        # History is cached: a second report doesn't fetch it again.
+        calls = self.provider.history_calls
+        c.get("/api/portfolio", params={"period": "1W"})
+        self.assertEqual(self.provider.history_calls, calls)
+
+        # Selling half keeps the average price; clearing removes the cost.
+        half = c.patch(f"/api/holdings/{apple['id']}", json={"quantity": 5}).json()
+        self.assertEqual(half["cost_basis_cents"], 40000)
+        cleared = c.patch(f"/api/holdings/{apple['id']}", json={"avg_price": "", "bought_on": ""}).json()
+        self.assertEqual((cleared["cost_basis_cents"], cleared["bought_on"]), (None, None))
+        self.assertIsNone(c.get("/api/portfolio").json()["total"])

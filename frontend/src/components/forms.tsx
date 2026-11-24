@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { api, type AssetType, type Frequency, type Kind, type Quote } from "../api";
 import { ASSET_TYPES, dateLabel, FREQUENCIES, frequencyText, money, todayIso } from "../format";
 import { useAsync } from "../hooks";
+import { AccountField, lastAccount, rememberAccount, useCashAccounts } from "./AccountField";
 
 function oneYearFromToday(): string {
   const [y, m, d] = todayIso().split("-");
@@ -23,6 +24,15 @@ export function TransactionForm({ onSaved, version }: { onSaved: () => void; ver
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const categories = useAsync(() => api.categories(kind), [kind, version]);
   const listId = `categories-${kind}`;
+  // Which cash account: the last one used, but "not from my accounts" for
+  // costs someone else covers (rent a family member pays) -- unless you pick one.
+  const accounts = useCashAccounts(version);
+  const settings = useAsync(api.settings, [version]);
+  const [accountChoice, setAccountChoice] = useState<number | null | undefined>(undefined);
+  const covered = (settings.data?.covered_categories ?? []).some(
+    (c) => c.toLowerCase() === category.trim().toLowerCase(),
+  );
+  const accountId = accountChoice !== undefined ? accountChoice : covered ? null : lastAccount(accounts);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -30,7 +40,9 @@ export function TransactionForm({ onSaved, version }: { onSaved: () => void; ver
     setMessage(null);
     try {
       if (repeat) {
-        const rule = await api.addRecurring({ kind, description, amount, category, frequency: repeat, start_on: date });
+        const rule = await api.addRecurring({
+          kind, description, amount, category, frequency: repeat, start_on: date, account_id: accountId,
+        });
         const added = rule.created ? `Added ${rule.created} so far. ` : "";
         setMessage({
           text: `Repeats ${frequencyText(rule.frequency)}. ${added}Next on ${dateLabel(rule.next_due)}.`,
@@ -39,11 +51,13 @@ export function TransactionForm({ onSaved, version }: { onSaved: () => void; ver
         setRepeat("");
         setDate(todayIso());
       } else {
-        const saved = await api.addTransaction({ kind, description, amount, category, occurred_on: date });
+        const saved = await api.addTransaction({ kind, description, amount, category, occurred_on: date, account_id: accountId });
         setMessage({ text: `Saved ${money(saved.amount_cents)} for ${saved.description}.`, error: false });
       }
       setDescription("");
       setAmount("");
+      rememberAccount(accountId);
+      setAccountChoice(undefined);
       onSaved();
     } catch (error) {
       setMessage({ text: (error as Error).message, error: true });
@@ -128,6 +142,17 @@ export function TransactionForm({ onSaved, version }: { onSaved: () => void; ver
           ))}
         </div>
       )}
+      <AccountField
+        kind={kind}
+        accounts={accounts}
+        value={accountId}
+        onChange={setAccountChoice}
+        hint={
+          accountChoice === undefined && covered
+            ? "Someone else covers this category, so it doesn't come out of your accounts."
+            : undefined
+        }
+      />
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <button className="btn btn-primary" type="submit" disabled={busy}>
           {busy ? "Saving…" : repeat ? `Add recurring ${kind}` : `Add ${kind}`}
@@ -146,6 +171,8 @@ export function HoldingForm({ onSaved }: { onSaved: () => void }) {
   const [symbol, setSymbol] = useState("");
   const [quantity, setQuantity] = useState("");
   const [value, setValue] = useState("");
+  const [boughtOn, setBoughtOn] = useState("");
+  const [avgPrice, setAvgPrice] = useState("");
   const [quote, setQuote] = useState<{ quote?: Quote; error?: string; symbol: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
@@ -177,12 +204,16 @@ export function HoldingForm({ onSaved }: { onSaved: () => void }) {
         symbol: needsSymbol ? symbol : undefined,
         quantity: priced ? qty : undefined,
         value: priced ? undefined : value,
+        bought_on: priced && boughtOn ? boughtOn : undefined,
+        avg_price: priced && avgPrice.trim() ? avgPrice : undefined,
       });
       setMessage({ text: `Added ${saved.name}.`, error: false });
       setName("");
       setSymbol("");
       setQuantity("");
       setValue("");
+      setBoughtOn("");
+      setAvgPrice("");
       setQuote(null);
       onSaved();
     } catch (error) {
@@ -255,7 +286,7 @@ export function HoldingForm({ onSaved }: { onSaved: () => void }) {
           </label>
         ) : (
           <label className="field">
-            <span>Current value</span>
+            <span>{type === "cash" ? "Balance today" : "Current value"}</span>
             <div className="money-input">
               <i>$</i>
               <input type="text" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} placeholder="0.00" required />
@@ -263,6 +294,32 @@ export function HoldingForm({ onSaved }: { onSaved: () => void }) {
           </label>
         )}
       </div>
+      {priced && (
+        <div className="field-row">
+          <label className="field">
+            <span>Bought on (optional)</span>
+            <input type="date" value={boughtOn} max={todayIso()} onChange={(e) => setBoughtOn(e.target.value)} />
+          </label>
+          <label className="field">
+            <span>Price paid {type === "gold" ? "per oz" : type === "crypto" ? "per coin" : "per share"} (optional)</span>
+            <div className="money-input">
+              <i>$</i>
+              <input type="text" inputMode="decimal" value={avgPrice} onChange={(e) => setAvgPrice(e.target.value)} placeholder="average" />
+            </div>
+          </label>
+        </div>
+      )}
+      {priced && (
+        <p className="hint" style={{ margin: 0 }}>
+          With these, the app shows how much it's gained since you bought it, and over any period.
+        </p>
+      )}
+      {type === "cash" && (
+        <p className="hint" style={{ margin: 0 }}>
+          Enter what your bank shows today. Transactions you add from now on and mark as paid from (or into) this
+          account keep the balance up to date.
+        </p>
+      )}
 
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <button className="btn btn-primary" type="submit" disabled={busy}>

@@ -135,12 +135,19 @@ class NetWorthReport:
 
 
 def value_holdings(
-    holdings: Sequence[Holding], quote: Callable[[str], Quote]
+    holdings: Sequence[Holding],
+    quote: Callable[[str], Quote],
+    balances: Optional[Dict[int, int]] = None,
 ) -> NetWorthReport:
+    """Value everything. ``balances`` overrides cash accounts' hand-entered
+    values with their balance now (see ``portfolio.account_balances``)."""
     lines = []
+    balances = balances or {}
     for holding in holdings:
         if not holding.asset_type.is_market_priced:
-            lines.append(HoldingValue(holding, holding.manual_value_cents))
+            value = balances.get(holding.id, holding.manual_value_cents) if holding.id is not None \
+                else holding.manual_value_cents
+            lines.append(HoldingValue(holding, value))
             continue
         try:
             q = quote(holding.symbol or "")

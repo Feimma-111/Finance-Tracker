@@ -130,7 +130,33 @@ CREATE TABLE sessions (
 );
 """
 
-MIGRATIONS: Tuple[str, ...] = (SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4)
+# Version 5: what investments cost (for gain/loss), cash accounts that follow
+# the transactions linked to them, and daily closing prices for charts.
+SCHEMA_V5 = """
+ALTER TABLE holdings ADD COLUMN bought_on TEXT;            -- YYYY-MM-DD, first bought
+ALTER TABLE holdings ADD COLUMN cost_basis_cents INTEGER;  -- total paid for the quantity held
+ALTER TABLE holdings ADD COLUMN balance_as_of TEXT;        -- cash: day the balance was checked
+ALTER TABLE holdings ADD COLUMN balance_mark INTEGER;      -- cash: newest transaction id at that moment
+ALTER TABLE transactions ADD COLUMN account_id INTEGER
+    REFERENCES holdings(id) ON DELETE SET NULL;
+ALTER TABLE recurring ADD COLUMN account_id INTEGER
+    REFERENCES holdings(id) ON DELETE SET NULL;
+CREATE INDEX transactions_by_account ON transactions (account_id, occurred_on);
+
+CREATE TABLE price_history (
+    symbol  TEXT NOT NULL,
+    day     TEXT NOT NULL,             -- YYYY-MM-DD (exchange's local date)
+    close   REAL NOT NULL,
+    PRIMARY KEY (symbol, day)
+) WITHOUT ROWID;
+CREATE TABLE price_history_fetched (
+    symbol      TEXT PRIMARY KEY,
+    currency    TEXT NOT NULL,
+    fetched_at  TEXT NOT NULL          -- ISO timestamp, UTC
+);
+"""
+
+MIGRATIONS: Tuple[str, ...] = (SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5)
 
 # Safety valve: never create more than this many transactions in one catch-up.
 MAX_CATCH_UP = 1000
@@ -205,7 +231,7 @@ class Store:
 
     def covered_categories(self) -> Tuple[List[str], str]:
         """(category names, note) for expenses someone else pays for, e.g. rent
-        covered by parents. Names that no longer exist are dropped."""
+        a family member covers. Names that no longer exist are dropped."""
         try:
             names = json.loads(self.get_setting("covered_categories", "[]"))
         except ValueError:
@@ -351,11 +377,12 @@ class Store:
             cursor = self.conn.execute(
                 """
                 UPDATE transactions
-                SET description = ?, amount_cents = ?, kind = ?, category_id = ?, occurred_on = ?
+                SET description = ?, amount_cents = ?, kind = ?, category_id = ?, occurred_on = ?,
+                    account_id = ?
                 WHERE id = ?
                 """,
                 (tx.description.strip(), tx.amount_cents, tx.kind.value,
-                 self._category_id(tx.category), tx.occurred_on.isoformat(), tx_id),
+                 self._category_id(tx.category), tx.occurred_on.isoformat(), tx.account_id, tx_id),
             )
             if cursor.rowcount:
                 self._mark_facts_changed()
@@ -402,8 +429,8 @@ class Store:
         cursor = self.conn.execute(
             """
             INSERT INTO transactions
-                (description, amount_cents, kind, category_id, occurred_on, recurring_id)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (description, amount_cents, kind, category_id, occurred_on, recurring_id, account_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 tx.description.strip(),
@@ -412,6 +439,7 @@ class Store:
                 self._category_id(tx.category),
                 tx.occurred_on.isoformat(),
                 tx.recurring_id,
+                tx.account_id,
             ),
         )
         return cursor.lastrowid
@@ -498,9 +526,16 @@ class Store:
         return total, count
 
     def daily_totals(
-        self, kind: Kind, start: date, end: date, *, exclude_categories: Sequence[str] = ()
+        self,
+        kind: Kind,
+        start: date,
+        end: date,
+        *,
+        exclude_categories: Sequence[str] = (),
+        only_categories: Optional[Sequence[str]] = None,
     ) -> Dict[date, int]:
-        """{day: total_cents} for days with transactions between start and end."""
+        """{day: total_cents} for days with transactions between start and end,
+        optionally leaving some categories out or keeping only some."""
         sql = """
             SELECT t.occurred_on AS day, SUM(t.amount_cents) AS total
             FROM transactions t JOIN categories c ON c.id = t.category_id
@@ -510,6 +545,11 @@ class Store:
         if exclude_categories:
             sql += f" AND c.name NOT IN ({', '.join('?' * len(exclude_categories))})"
             params += list(exclude_categories)
+        if only_categories is not None:
+            if not only_categories:
+                return {}
+            sql += f" AND c.name IN ({', '.join('?' * len(only_categories))})"
+            params += list(only_categories)
         sql += " GROUP BY t.occurred_on"
         return {date.fromisoformat(row["day"]): row["total"] for row in self.conn.execute(sql, params)}
 
@@ -567,9 +607,9 @@ class Store:
         with self.conn:
             cursor = self.conn.execute(
                 """
-                INSERT INTO recurring (description, amount_cents, kind, category_id,
-                                       frequency, start_on, generated_count, next_due, active)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO recurring (description, amount_cents, kind, category_id, frequency,
+                                       start_on, generated_count, next_due, active, account_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rule.description.strip(),
@@ -581,6 +621,7 @@ class Store:
                     rule.generated_count,
                     rule.next_due.isoformat(),
                     int(rule.active),
+                    rule.account_id,
                 ),
             )
         return cursor.lastrowid
@@ -611,11 +652,11 @@ class Store:
             cursor = self.conn.execute(
                 """
                 INSERT INTO recurring (description, amount_cents, kind, category_id, frequency,
-                                       start_on, generated_count, next_due, active)
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1)
+                                       start_on, generated_count, next_due, active, account_id)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1, ?)
                 """,
                 (tx.description, tx.amount_cents, tx.kind.value, category_id, frequency.value,
-                 tx.occurred_on.isoformat(), rule.occurrence(1).isoformat()),
+                 tx.occurred_on.isoformat(), rule.occurrence(1).isoformat(), tx.account_id),
             )
             rule_id = cursor.lastrowid
             self.conn.execute("UPDATE transactions SET recurring_id = ? WHERE id = ?", (rule_id, tx_id))
@@ -640,10 +681,11 @@ class Store:
                     self.conn.execute(
                         """
                         INSERT INTO transactions
-                            (description, amount_cents, kind, category_id, occurred_on, recurring_id)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                            (description, amount_cents, kind, category_id, occurred_on, recurring_id, account_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (tx.description, tx.amount_cents, tx.kind.value, category_id, due.isoformat(), rule_id),
+                        (tx.description, tx.amount_cents, tx.kind.value, category_id, due.isoformat(), rule_id,
+                         tx.account_id),
                     )
                     created += 1
                 n += 1
@@ -739,11 +781,11 @@ class Store:
                     self.conn.execute(
                         """
                         INSERT INTO transactions
-                            (description, amount_cents, kind, category_id, occurred_on, recurring_id)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                            (description, amount_cents, kind, category_id, occurred_on, recurring_id, account_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         (row["description"], row["amount_cents"], row["kind"],
-                         row["category_id"], due.isoformat(), row["id"]),
+                         row["category_id"], due.isoformat(), row["id"], row["account_id"]),
                     )
                     count += 1
                     created += 1
@@ -788,8 +830,9 @@ class Store:
         with self.conn:
             cursor = self.conn.execute(
                 """
-                INSERT INTO holdings (asset_type, name, symbol, quantity, manual_value_cents)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO holdings (asset_type, name, symbol, quantity, manual_value_cents,
+                                      bought_on, cost_basis_cents, balance_as_of, balance_mark)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(id), 0) FROM transactions))
                 """,
                 (
                     holding.asset_type.value,
@@ -797,6 +840,9 @@ class Store:
                     holding.symbol.upper() if holding.symbol else None,
                     holding.quantity,
                     holding.manual_value_cents,
+                    holding.bought_on.isoformat() if holding.bought_on else None,
+                    holding.cost_basis_cents,
+                    holding.balance_as_of.isoformat() if holding.balance_as_of else None,
                 ),
             )
         return cursor.lastrowid
@@ -819,7 +865,13 @@ class Store:
         manual_value_cents: Optional[int] = None,
         name: Optional[str] = None,
         symbol: Optional[str] = None,
+        bought_on: Optional[date] = None,
+        cost_basis_cents: Optional[int] = None,
+        balance_as_of: Optional[date] = None,
+        clear: Sequence[str] = (),
     ) -> bool:
+        """Change the fields given; ``clear`` names fields to empty
+        ("bought_on", "cost_basis_cents")."""
         changes: dict = {}
         if quantity is not None:
             changes["quantity"] = quantity
@@ -829,6 +881,18 @@ class Store:
             changes["name"] = name.strip()
         if symbol is not None:
             changes["symbol"] = symbol.strip().upper()
+        if bought_on is not None:
+            changes["bought_on"] = bought_on.isoformat()
+        if cost_basis_cents is not None:
+            changes["cost_basis_cents"] = cost_basis_cents
+        if balance_as_of is not None:
+            changes["balance_as_of"] = balance_as_of.isoformat()
+            changes["balance_mark"] = self.conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM transactions").fetchone()[0]
+        for column in clear:
+            if column not in ("bought_on", "cost_basis_cents"):
+                raise ValueError(f"can't clear {column}")
+            changes[column] = None
         if not changes:
             return False
         assignments = ", ".join(f"{column} = ?" for column in changes)  # fixed column names
@@ -869,6 +933,67 @@ class Store:
                 (symbol.upper(), price, currency, fetched_at.isoformat(timespec="seconds")),
             )
 
+    # ---------------------------------------------------------- cash accounts
+
+    def account_changes(self, today: date) -> Dict[int, int]:
+        """{cash holding id: cents} -- how much each cash account has moved
+        since its balance was checked: income linked to it adds, expenses
+        subtract. A transaction counts if it's dated after the day the balance
+        was checked, or that same day but added afterwards (lunch logged after
+        updating the balance this morning). Back-dated entries are assumed to
+        be in the bank's balance already; future-dated ones wait for their day.
+        """
+        rows = self.conn.execute(
+            """
+            SELECT h.id,
+                   SUM(CASE t.kind WHEN 'income' THEN t.amount_cents ELSE -t.amount_cents END) AS change
+            FROM holdings h JOIN transactions t ON t.account_id = h.id
+            WHERE h.asset_type = 'cash' AND h.balance_as_of IS NOT NULL
+              AND (t.occurred_on > h.balance_as_of
+                   OR (t.occurred_on = h.balance_as_of AND t.id > COALESCE(h.balance_mark, 0)))
+              AND t.occurred_on <= ?
+            GROUP BY h.id
+            """,
+            (today.isoformat(),),
+        )
+        return {row["id"]: row["change"] for row in rows}
+
+    def is_cash_account(self, holding_id: int) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM holdings WHERE id = ? AND asset_type = 'cash'", (holding_id,)
+        ).fetchone() is not None
+
+    # ---------------------------------------------------------- price history
+
+    def save_price_history(
+        self, symbol: str, closes: Sequence[Tuple[date, float]], currency: str, fetched_at: datetime
+    ) -> None:
+        symbol = symbol.upper()
+        with self.conn:
+            self.conn.executemany(
+                "INSERT INTO price_history (symbol, day, close) VALUES (?, ?, ?) "
+                "ON CONFLICT (symbol, day) DO UPDATE SET close = excluded.close",
+                [(symbol, day.isoformat(), close) for day, close in closes],
+            )
+            self.conn.execute(
+                "INSERT INTO price_history_fetched (symbol, currency, fetched_at) VALUES (?, ?, ?) "
+                "ON CONFLICT (symbol) DO UPDATE SET currency = excluded.currency, fetched_at = excluded.fetched_at",
+                (symbol, currency, fetched_at.isoformat(timespec="seconds")),
+            )
+
+    def price_history(self, symbol: str) -> List[Tuple[date, float]]:
+        """Daily closes, oldest first."""
+        rows = self.conn.execute(
+            "SELECT day, close FROM price_history WHERE symbol = ? ORDER BY day", (symbol.upper(),)
+        )
+        return [(date.fromisoformat(row["day"]), row["close"]) for row in rows]
+
+    def price_history_fetched(self, symbol: str) -> Optional[Tuple[datetime, str]]:
+        row = self.conn.execute(
+            "SELECT fetched_at, currency FROM price_history_fetched WHERE symbol = ?", (symbol.upper(),)
+        ).fetchone()
+        return (datetime.fromisoformat(row["fetched_at"]), row["currency"]) if row else None
+
     # -------------------------------------------------------------- net worth
 
     def record_net_worth(self, day: date, total_cents: int) -> None:
@@ -903,7 +1028,7 @@ class Store:
 
 _TX_SELECT = """
     SELECT t.id, t.description, t.amount_cents, t.kind, t.occurred_on, t.recurring_id,
-           c.name AS category
+           t.account_id, c.name AS category
     FROM transactions t JOIN categories c ON c.id = t.category_id
 """
 
@@ -942,6 +1067,7 @@ def _row_to_transaction(row: sqlite3.Row) -> Transaction:
         occurred_on=date.fromisoformat(row["occurred_on"]),
         kind=Kind(row["kind"]),
         recurring_id=row["recurring_id"],
+        account_id=row["account_id"],
     )
 
 
@@ -956,6 +1082,7 @@ def _row_to_rule(row: sqlite3.Row) -> RecurringRule:
         kind=Kind(row["kind"]),
         generated_count=row["generated_count"],
         active=bool(row["active"]),
+        account_id=row["account_id"],
     )
 
 
@@ -967,4 +1094,7 @@ def _row_to_holding(row: sqlite3.Row) -> Holding:
         symbol=row["symbol"],
         quantity=row["quantity"],
         manual_value_cents=row["manual_value_cents"],
+        bought_on=date.fromisoformat(row["bought_on"]) if row["bought_on"] else None,
+        cost_basis_cents=row["cost_basis_cents"],
+        balance_as_of=date.fromisoformat(row["balance_as_of"]) if row["balance_as_of"] else None,
     )

@@ -6,15 +6,27 @@ from finance_tracker.store import Store
 
 
 class FakeProvider:
-    def __init__(self, prices):
+    def __init__(self, prices, histories=None, news=None):
         self.prices = prices
+        self.histories = histories or {}  # symbol -> [(date, close), ...]
+        self.news = news or {}            # symbol -> [(date, title), ...]
         self.calls = 0
+        self.history_calls = 0
 
     def fetch(self, symbol):
         self.calls += 1
         if symbol not in self.prices:
             raise PriceUnavailable(f"no market data for '{symbol}'")
         return self.prices[symbol], "USD"
+
+    def history(self, symbol):
+        self.history_calls += 1
+        if symbol not in self.histories:
+            raise PriceUnavailable(f"no price history for '{symbol}'")
+        return "USD", self.histories[symbol]
+
+    def headlines(self, symbol, limit=5):
+        return self.news.get(symbol, [])[:limit]
 
 
 class FakeClock:

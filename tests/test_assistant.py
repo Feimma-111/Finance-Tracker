@@ -95,7 +95,7 @@ class ToolTests(unittest.TestCase):
 
     def test_covered_categories(self):
         self.store.set_setting("covered_categories", '["Groceries", "Travel", "Deleted category"]')
-        self.store.set_setting("covered_note", "My parents pay for these")
+        self.store.set_setting("covered_note", "Family pays for these")
         tools = Tools(self.store, TODAY)
         self.assertEqual(tools.covered, ["Groceries", "Travel"])  # missing names dropped
         aug = tools.run("spending_total", {"start": "2026-08-01", "end": "2026-08-31"})
@@ -112,9 +112,9 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(compare["spending_you_control_difference"], "$6.00 less in the second period")
         self.assertEqual(tools.run("spending_total", {"start": "2026-08-01", "end": "2026-08-31",
                                                       "category": "Travel"})["covered_by_someone_else"],
-                         "My parents pay for these")
+                         "Family pays for these")
         from finance_tracker.assistant import system_prompt
-        self.assertIn("paid for by someone else (My parents pay for these): Groceries, Travel",
+        self.assertIn("paid for by someone else (Family pays for these): Groceries, Travel",
                       system_prompt(self.store, TODAY))
 
     def test_recurring_monthly_equivalents(self):
@@ -183,8 +183,20 @@ class AskLoopTests(unittest.TestCase):
         self.assertEqual(unverified_numbers("About $1,084 (16%), down 33.3%.", steps), [])
         self.assertEqual(unverified_numbers("That's $1,100.", steps), ["$1,100"])
 
+    def test_follow_up_with_context(self):
+        # A follow-up on an analysis: its fact sheet is context, and its numbers count as checked.
+        model = FakeModel([{"content": "Boba was $87.81 of it, and Food is up 83.9%. Maybe $20 less?"}])
+        result = ask(self.store, TODAY, "What drove it?", model,
+                     context="- Boba (Food): 3 purchases, $87.81\n- Food: $108.46 more (+83.9%)")
+        self.assertEqual(result["unverified"], ["$20"])
+        roles = [m["role"] for m in model.sent[0]]
+        self.assertEqual(roles, ["system", "system", "user"])
+        self.assertIn("Boba (Food): 3 purchases", model.sent[0][1]["content"])
+
 
 class FakeAI:
+    sent = []
+
     def __init__(self, url):
         pass
 
@@ -192,6 +204,7 @@ class FakeAI:
         return ["qwen3.5:latest"]
 
     def chat(self, model, messages, tools):
+        FakeAI.sent.append(messages)
         if messages[-1]["role"] == "user":
             return tool_call("list_categories")
         return {"content": "You have categories for food and groceries."}
@@ -215,6 +228,19 @@ class AskApiTests(unittest.TestCase):
                 self.assertEqual(reply["steps"][0]["tool"], "list_categories")
                 self.assertEqual(reply["model"], "qwen3.5:latest")
                 self.assertEqual(client.post("/api/ai/ask", json={"question": ""}).status_code, 422)
+
+                # A follow-up on "AI on these categories": the server rebuilds its fact sheet.
+                client.post("/api/transactions", json={
+                    "description": "Boba", "amount": "6", "category": "Food", "occurred_on": "2026-11-03"})
+                FakeAI.sent = []
+                follow_up = client.post("/api/ai/ask", json={
+                    "question": "Why?", "focus": {"month": "2026-11", "categories": ["food"]}})
+                self.assertEqual(follow_up.status_code, 200)
+                context = FakeAI.sent[0][1]["content"]
+                self.assertIn("Categories you asked about: Food", context)
+                self.assertIn("Boba (Food)", context)
+                self.assertEqual(client.post("/api/ai/ask", json={
+                    "question": "Why?", "focus": {"categories": ["Nope"]}}).status_code, 400)
 
 
 if __name__ == "__main__":

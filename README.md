@@ -1,8 +1,32 @@
 # Finance Tracker
 
-Track spending and income, and follow your net worth across cash, stocks, crypto,
-and gold with live market prices. You can use it as a **web dashboard** with
-charts or as a **terminal app**. Both read and write the same data.
+A personal finance app that runs on your own computer. Track spending and
+income, follow your bank balances and net worth, and see how your stocks,
+crypto, and gold are doing with live market prices. An optional AI analyst runs
+on a computer you own (through [Ollama](https://ollama.com)), so your data never
+goes to a cloud service. Use it as a **web dashboard** with charts, from your
+phone over [Tailscale](https://tailscale.com), or as a **terminal app**. All of
+them read and write the same data.
+
+It's a learning project: a Python/FastAPI backend over SQLite, a React +
+TypeScript frontend, and 160+ tests. No financial data is in this repository;
+it lives in a file on your own machine.
+
+**What it does**
+
+- **Spending:** transactions with categories, recurring bills, CSV import, and
+  search by name or amount. Charts show where the money went and how this month
+  is pacing against last month. Tick a few categories to chart just those, or
+  click a slice to see what one category was made of.
+- **Money you have:** bank accounts whose balances follow the transactions you
+  link to them (your *liquid* total), plus stocks, crypto, and gold priced
+  live, with gains since you bought and over any period, Robinhood style.
+- **AI analyst:** monthly reviews, a close look at the categories you pick, a
+  chat that answers questions from exact lookups, and a description of your
+  investments and the market. Every number is computed by the app, never by
+  the model.
+- **Safety:** a passcode lock, automatic backups, and the database kept outside
+  the project folder.
 
 ## Web dashboard
 
@@ -87,7 +111,7 @@ you open it. Each device then stays signed in for 30 days.
 | Who can reach the app | Only this Mac (`127.0.0.1`), plus your own Tailscale devices through `tailscale serve`. Never turn on `tailscale funnel`, which would make it public. |
 | Sign-in | 6-digit passcode stored as a PBKDF2 hash, with a lockout after wrong guesses. Sessions use HttpOnly, SameSite=Strict cookies. |
 | Data on disk | One SQLite file, readable only by your user account, on a FileVault-encrypted disk. It's never committed to git. |
-| What leaves your devices | Ticker symbols go to Yahoo for prices. Nothing else: the AI runs on your own PC over Tailscale. |
+| What leaves your devices | Ticker symbols go to Yahoo for prices and news headlines. Nothing else: the AI runs on your own PC over Tailscale. |
 | Web attacks | Every query is parameterized, so SQL injection isn't possible. React escapes all text, including AI answers and imported CSVs. The SameSite cookies and JSON-only API block cross-site requests. |
 
 ### On your phone
@@ -195,7 +219,8 @@ finance_tracker/
   models.py                 Transaction / Holding dataclasses, money and date parsing
   store.py                  SQLite schema, migrations, and every query
   prices.py                 live prices (Yahoo Finance) with an offline cache
-  reports.py                monthly stats, net-worth math (pure functions)
+  reports.py                monthly stats, net-worth math, purchase grouping (pure functions)
+  portfolio.py              investment gains, chart series, cash account balances (pure functions)
   api.py                    REST API for the web dashboard (FastAPI)
   auth.py                   passcode hashing, sessions, lockout
   backup.py                 daily backups, safety copies, restore
@@ -209,7 +234,8 @@ finance_tracker/
 frontend/
   src/api.ts                typed client for every API endpoint
   src/pages/                Dashboard, Transactions, Holdings
-  src/components/           charts, forms, tables
+  src/components/           charts, forms, tables, AI panels
+  src/search.ts             transaction search (names, amounts, ranges)
   src/styles.css            design tokens (light + dark) and layout
 tests/                      unit tests, scripted terminal sessions, API tests
 legacy/main_v1.py           the original single-file version
@@ -236,11 +262,13 @@ Every endpoint except `/api/auth/...` requires a signed-in session.
 | POST | `/api/import` | import a CSV's new transactions |
 | GET | `/api/reports/categories?month=` | spending per category |
 | GET | `/api/reports/monthly` | last 12 months with how unusual each was |
-| GET | `/api/reports/pace?month=` | running total through a month vs. the month before |
+| GET | `/api/reports/pace?month=&category=` | running total through a month vs. the month before (optionally only some categories) |
+| GET | `/api/reports/purchases?category=&month=` | one category's spending, grouped by purchase |
 | GET / POST | `/api/holdings` | list / add |
-| PATCH / DELETE | `/api/holdings/{id}` | change name, symbol, quantity, or value / remove |
+| PATCH / DELETE | `/api/holdings/{id}` | change name, symbol, quantity, value, purchase date, or price paid / remove |
 | GET | `/api/quotes/{symbol}` | live price (used to check tickers) |
-| GET | `/api/net-worth` | value everything; records today's snapshot |
+| GET | `/api/net-worth` | value everything (cash accounts with their linked transactions), liquid total; records today's snapshot |
+| GET | `/api/portfolio?period=` | investment gains since buying, over 1W–All, and today, plus the chart |
 | GET | `/api/net-worth/history` | daily snapshots for the trend chart |
 | GET / POST | `/api/recurring` | recurring rules / add one (past occurrences filled in) |
 | PATCH / DELETE | `/api/recurring/{id}` | pause, resume, change amount / stop |
@@ -248,7 +276,10 @@ Every endpoint except `/api/auth/...` requires a signed-in session.
 | PUT | `/api/profile` | rename |
 | GET | `/api/ai/status` | is the PC reachable, and which models it has |
 | GET / POST | `/api/ai/reviews/{month}` | last saved review / write a new one |
-| POST | `/api/ai/ask` | answer a question using lookup tools |
+| POST | `/api/ai/ask` | answer a question using lookup tools (optionally a follow-up on a category analysis) |
+| POST | `/api/ai/focus` | review only the chosen categories (not saved) |
+| GET | `/api/ai/changed` | when the data reviews are based on last changed |
+| POST | `/api/ai/holdings` | describe your investments and the market (not saved) |
 
 ### AI analyst
 
@@ -290,7 +321,12 @@ ticks just that category ("Other" ticks everything in it). With one category
 ticked, the chart breaks it down by purchase (Boba ×3, Lunch ×2, ...). The panel
 beside the chart, **AI on these categories**, looks at only the ticked ones. It names the purchases that drove
 the spending (for example, "3 boba runs, $87.81"), describes the trend, and
-gives ideas for those purchases. Its fact sheet (`focus_facts` in
+gives ideas for those purchases. Under the chart, the same running-total line
+as the top of the Home screen shows just the ticked categories against last
+month, so one big bill elsewhere (tuition, say) doesn't hide the trend. Below
+the analysis you can **ask follow-up questions**: the server rebuilds the same
+fact sheet and gives it to the model as context, along with the lookup tools,
+and numbers from either count as checked. Its fact sheet (`focus_facts` in
 `analyst.py`) contains nothing about the other categories, so the model can't
 wander into reviewing the whole month. Comparisons such as "higher than any of
 the previous 6 months" or "up 2 months in a row" are worked out in Python too,
@@ -299,8 +335,8 @@ these analyses are kept for the browser session only. Your ticked categories
 are remembered on each device.
 
 **Expenses someone else covers.** In **Settings → Covered by someone else**, tick
-categories you don't pay for yourself, such as rent or tuition your parents
-cover, and say who covers them. These categories still count in your totals,
+categories you don't pay for yourself, such as rent a family member pays or
+costs an employer reimburses, and say who covers them. These categories still count in your totals,
 but:
 
 - The review's fact sheet marks them `[covered]` and adds **spending you
@@ -326,6 +362,56 @@ but:
    ```
 4. In the app, open **Settings → AI analyst**, enter `http://100.x.y.z:11434`,
    and choose a model.
+
+### Your money: bank accounts and investments
+
+**Liquid (cash accounts).** Add each bank account as a *Cash* holding with the
+balance your bank shows today. When you add a transaction, choose which account
+it was **paid from** (or **paid into**, for income). The last account you used
+is picked for you, and categories someone else covers default to *Not from my
+accounts*. Each account's balance is the one you entered plus the linked
+income, minus the linked expenses, since then. Your **liquid** total (every
+cash account together) is on the Holdings page and the Home screen.
+Transactions dated before the day you entered the balance are assumed to be in
+it already; ones dated in the future count once their day comes. When your
+bank and the app drift apart, enter the bank's number again and it starts over
+from there.
+
+**Investments.** For stocks, crypto, and gold, add **when you bought it** and
+the **average price you paid**. The Holdings page then shows, like Robinhood:
+
+- the value, and a chart of it over **1W, 1M, 3M, YTD, 1Y**, or **All**
+- the change over that period, **today's** change, and the **gain since you
+  bought**, in dollars and percent, for each investment and all together
+
+Daily closing prices come from Yahoo and are saved, refreshing at most every 12
+hours. If you bought during the period, the gain counts from what you paid.
+Each holding has one purchase date and an average cost, like Robinhood's
+*average cost*. If you bought more later, enter your average price and the
+first date; gains for periods before the later purchase then treat it as held
+all along.
+
+**AI on your investments** (Holdings page). The app works out each
+investment's gains over a day, week, month, 3 months, and a year. It also adds
+the S&P 500's and Nasdaq's moves (plus Bitcoin or gold if you hold them) and
+this week's Yahoo Finance headlines about your holdings. The model describes
+what's going on from those facts. It's told never to recommend buying, selling,
+or holding anything, and never to predict prices. The headlines are labeled as
+third-party text, and the model is told not to follow instructions inside them.
+Like the other AI panels, results last for the browser session.
+
+### Searching transactions
+
+The search box on the Transactions page matches every word you type:
+
+| Type | Finds |
+|---|---|
+| `coffee` | name or category contains "coffee" |
+| `12` | $12.00 to $12.99 |
+| `12.5` / `12.50` | $12.50 to $12.59 / exactly $12.50 |
+| `>100`, `<=20` | more than $100, $20 or less |
+| `50-100` | between $50 and $100 |
+| `boba >5` | boba purchases over $5 |
 
 ### Importing a CSV
 
@@ -427,8 +513,12 @@ paused. Stopping a rule keeps the transactions it already created.
 - [x] Ask questions about your money, answered from exact lookups
 - [x] Passcode lock, and phone access over Tailscale
 - [x] Automatic backups; data moved out of the project and out of iCloud sync
+- [x] Category focus with its own AI analysis, chart, and follow-up chat
+- [x] Bank accounts that follow transactions (liquid total); investment gains
+      over any period; AI on investments and the market
 - [ ] Next: move to an always-on Raspberry Pi ([plan](docs/raspberry-pi.md))
 - [ ] Later: Wake-on-LAN to turn the PC on from the app
 
-Ideas not built yet: budgets per category, cost basis and gain/loss for investments, liabilities (loans, credit
-cards), and non-USD holdings.
+Ideas not built yet: money in more than one currency (and a travel mode that
+converts at today's rates), budgets per category, separate purchase lots per
+investment, and liabilities (loans, credit cards).

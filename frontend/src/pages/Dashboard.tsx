@@ -71,6 +71,12 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
     () => (single ? api.purchases(single, month) : Promise.resolve(null)),
     [single, month, version],
   );
+  // The running-total line chart, for just the ticked categories.
+  const narrowed = view === "some" || view === "one";
+  const focusPace = useAsync(
+    () => (narrowed ? api.pace(month, chosen) : Promise.resolve(null)),
+    [narrowed ? chosen.join("\n") : null, month, version],
+  );
 
   const monthOptions = months.data ?? [month];
 
@@ -114,6 +120,11 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
                 <>
                   <div className="hero">{money(worth.data.worth.total_cents)}</div>
                   <NetWorthDelta change={worth.data.worth.change_cents} since={worth.data.worth.change_since} />
+                  {worth.data.worth.lines.some((l) => l.asset_type === "cash") && (
+                    <div className="delta" title="Every cash account together: what you could spend right now">
+                      Liquid <strong className="num">{money(worth.data.worth.liquid_cents)}</strong>
+                    </div>
+                  )}
                   {!worth.data.worth.complete && (
                     <p className="message error">Some holdings couldn't be priced, so this total is incomplete.</p>
                   )}
@@ -248,6 +259,7 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
                 onSelect={choose}
               />
             ))}
+            {narrowed && focusPace.data?.categories && <FocusPace pace={focusPace.data} />}
           </div>
           <FocusReview month={month} categories={chosen} everything={everything} status={ai} version={version} />
         </div>
@@ -280,30 +292,30 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
   );
 }
 
-/** "Spent in November" with how it's pacing against the same days last month. */
-function SpendHero({ pace }: { pace: Pace }) {
-  const label = pace.controlled ? "Spending you control" : "Spent";
+/** "▲ $77.77 more than this point in October" (or the finished-month version). */
+function PaceComparison({ pace }: { pace: Pace }) {
   const last = monthLabel(pace.previous_month).split(" ")[0];
   const diff = pace.difference_cents;
-  let comparison;
-  if (!pace.through_day) {
-    comparison = <span className="subtle">This month hasn't started yet.</span>;
-  } else if (!pace.last_month_total_cents) {
-    comparison = <span className="subtle">Nothing recorded in {last} to compare with.</span>;
-  } else if (pace.in_progress) {
-    comparison = (
+  if (!pace.through_day) return <span className="subtle">This month hasn't started yet.</span>;
+  if (!pace.last_month_total_cents) return <span className="subtle">Nothing recorded in {last} to compare with.</span>;
+  if (pace.in_progress) {
+    return (
       <span className={diff > 0 ? "delta-bad" : "delta-good"}>
         {diff > 0 ? "▲" : "▼"} {money(Math.abs(diff))} {diff > 0 ? "more" : "less"} than this point in {last}
       </span>
     );
-  } else {
-    const full = pace.spent_cents - pace.last_month_total_cents;
-    comparison = (
-      <span className={full > 0 ? "delta-bad" : "delta-good"}>
-        {full > 0 ? "▲" : "▼"} {money(Math.abs(full))} {full > 0 ? "more" : "less"} than {last}
-      </span>
-    );
   }
+  const full = pace.spent_cents - pace.last_month_total_cents;
+  return (
+    <span className={full > 0 ? "delta-bad" : "delta-good"}>
+      {full > 0 ? "▲" : "▼"} {money(Math.abs(full))} {full > 0 ? "more" : "less"} than {last}
+    </span>
+  );
+}
+
+/** "Spent in November" with how it's pacing against the same days last month. */
+function SpendHero({ pace }: { pace: Pace }) {
+  const label = pace.controlled ? "Spending you control" : "Spent";
   return (
     <div className="spend-hero">
       <div className="eyebrow">
@@ -313,7 +325,18 @@ function SpendHero({ pace }: { pace: Pace }) {
         )}
       </div>
       <div className="hero">{money(pace.spent_cents)}</div>
-      <div className="delta">{comparison}</div>
+      <div className="delta"><PaceComparison pace={pace} /></div>
+      <PaceChart pace={pace} />
+    </div>
+  );
+}
+
+/** The same running-total chart as the top of the page, for the ticked categories only. */
+function FocusPace({ pace }: { pace: Pace }) {
+  return (
+    <div className="focus-pace">
+      <div className="eyebrow">Running total of these categories</div>
+      <div className="delta"><PaceComparison pace={pace} /></div>
       <PaceChart pace={pace} />
     </div>
   );

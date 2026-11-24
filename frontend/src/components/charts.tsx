@@ -522,7 +522,7 @@ export function AllocationDonut({ worth }: { worth: NetWorth }) {
  * Spending by category as a donut. ``colorOrder`` is the user's biggest
  * categories of all time (covered ones excluded); the first five get the five
  * series colors for good, the rest of the month is "Other", and covered costs
- * (e.g. rent your parents pay) are one light-gray "Covered" slice. Clicking a
+ * (e.g. rent a family member pays) are one light-gray "Covered" slice. Clicking a
  * slice ticks that category; "Other" and "Covered" tick everything inside them.
  */
 export function CategoryDonut({

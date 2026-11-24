@@ -5,6 +5,7 @@ import { TransactionList } from "../components/TransactionList";
 import { money, monthLabel } from "../format";
 import { useAsync } from "../hooks";
 import { TabIcons } from "../icons";
+import { transactionMatcher } from "../search";
 
 export function Transactions({ version, onChanged }: { version: number; onChanged: () => void }) {
   const [month, setMonth] = useState<string>(""); // "" = all time
@@ -12,15 +13,9 @@ export function Transactions({ version, onChanged }: { version: number; onChange
   const months = useAsync(api.months, [version]);
   const list = useAsync(() => api.transactions(month || null), [month, version]);
 
-  // Search matches the description, category, or amount ("coffee", "rent", "4.50").
-  const needle = search.trim().toLowerCase();
-  const items = (list.data?.items ?? []).filter(
-    (t) =>
-      !needle ||
-      t.description.toLowerCase().includes(needle) ||
-      t.category.toLowerCase().includes(needle) ||
-      (t.amount_cents / 100).toFixed(2).includes(needle.replace(/[$,]/g, "")),
-  );
+  // Name, category, or amount ("coffee", "12.50", ">100", "50-100"); see search.ts.
+  const needle = search.trim();
+  const items = (list.data?.items ?? []).filter(transactionMatcher(needle));
   const spent = items.filter((t) => t.kind === "expense").reduce((s, t) => s + t.amount_cents, 0);
   const income = items.filter((t) => t.kind === "income").reduce((s, t) => s + t.amount_cents, 0);
 
@@ -36,8 +31,8 @@ export function Transactions({ version, onChanged }: { version: number; onChange
                 type="search"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search transactions"
-                aria-label="Search transactions"
+                placeholder="Search by name or amount (coffee, 12.50, >100)"
+                aria-label="Search transactions by name, category, or amount"
               />
             </label>
             <select aria-label="Month" value={month} onChange={(e) => setMonth(e.target.value)}>
