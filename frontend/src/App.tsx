@@ -1,8 +1,10 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api, LOCKED_EVENT, type Settings as SettingsData } from "./api";
+import { useCashAccounts } from "./components/AccountField";
 import { TransactionForm } from "./components/forms";
 import { PasscodeScreen } from "./components/Passcode";
 import { Sheet } from "./components/Sheet";
+import { currencySymbol, displayCurrency, displayRate, setDisplayCurrency } from "./format";
 import { applyTheme, useAsync, type ThemeChoice } from "./hooks";
 import { TabIcons } from "./icons";
 import { Dashboard } from "./pages/Dashboard";
@@ -83,6 +85,48 @@ function MainApp() {
     }, () => {});
   }, []);
 
+  // Display currency: amounts come from the server in USD and are shown in
+  // this currency at today's rate. Changing it reloads every screen.
+  const display = settings?.display_currency ?? "USD";
+  const [rateError, setRateError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const apply = (currency: string, rate: number) => {
+      if (cancelled || (currency === displayCurrency() && rate === displayRate())) return;
+      setDisplayCurrency(currency, rate);
+      onChanged();
+    };
+    if (display === "USD") {
+      apply("USD", 1);
+      setRateError(null);
+    } else {
+      api.fx(display).then(
+        (fx) => {
+          apply(fx.currency, fx.rate);
+          setRateError(null);
+        },
+        () => {
+          apply("USD", 1); // offline: dollars rather than a wrong conversion
+          setRateError(`Couldn't get today's ${display} rate, so amounts are in US dollars for now.`);
+        },
+      );
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [display]);
+
+  // Travel mode: new transactions default to this account (e.g. your NT$ bank).
+  const accounts = useCashAccounts(version);
+  const travel = accounts.find((a) => a.id === settings?.travel_account_id);
+  async function endTravel() {
+    try {
+      setSettings(await api.saveSettings({ travel_account_id: null }));
+    } catch {
+      // stays on; it can be turned off in Settings
+    }
+  }
+
   async function changeTheme(theme: ThemeChoice) {
     applyTheme(theme); // instant; then save
     setSettings((s) => (s ? { ...s, theme } : s));
@@ -133,6 +177,15 @@ function MainApp() {
         </button>
       </header>
       <main>
+        {travel && (
+          <div className="travel-banner" role="status">
+            <span>
+              ✈ Travel mode: new transactions go to <strong>{travel.name}</strong> ({currencySymbol(travel.currency)})
+            </span>
+            <button className="btn-link" type="button" onClick={endTravel}>Turn off</button>
+          </div>
+        )}
+        {rateError && <p className="message error">{rateError}</p>}
         {page === "dashboard" && (
           <h1 className="page-title">{greeting()}, {profile.data.name}</h1>
         )}

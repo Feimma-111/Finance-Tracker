@@ -21,7 +21,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
-from .models import Frequency, Kind, format_money, month_of, shift_month
+from .models import HOME_CURRENCY, Frequency, Kind, format_amount, format_money, month_of, shift_month, to_home_cents
 from .store import Store
 
 MAX_TOOL_ROUNDS = 6
@@ -338,7 +338,8 @@ class Tools:
         )
         return {"count": len(rows), "transactions": [
             {"date": t.occurred_on.isoformat(), "description": t.description, "category": t.category,
-             "amount": format_money(t.amount_cents), "type": t.kind.value}
+             "amount": format_money(t.amount_cents), "type": t.kind.value,
+             **({"paid": format_amount(t.paid_cents, t.currency)} if t.currency != HOME_CURRENCY else {})}
             for t in rows
         ]}
 
@@ -347,11 +348,14 @@ class Tools:
         rules = [r for r in self.store.recurring_rules() if r.active]
         items, monthly_expense = [], 0
         for r in rules:
-            monthly = round(r.amount_cents * per_year[r.frequency] / 12)
+            # In US dollars, so rules in different currencies add up.
+            rate = self.store.fx_rate(r.currency, self.today)
+            usd = to_home_cents(r.amount_cents, rate) if rate else r.amount_cents
+            monthly = round(usd * per_year[r.frequency] / 12)
             if r.kind is Kind.EXPENSE:
                 monthly_expense += monthly
             items.append({"description": r.description, "category": r.category, "type": r.kind.value,
-                          "amount": format_money(r.amount_cents), "frequency": r.frequency.value,
+                          "amount": format_amount(r.amount_cents, r.currency), "frequency": r.frequency.value,
                           "monthly_equivalent": format_money(monthly), "next_date": r.next_due.isoformat(),
                           **({"covered_by_someone_else": True} if r.category in self.covered else {})})
         return {"recurring": items, "recurring_expenses_per_month": format_money(monthly_expense)}

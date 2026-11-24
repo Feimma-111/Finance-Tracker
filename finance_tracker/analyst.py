@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .models import GOLD_SYMBOL, AssetType, Kind, format_money, month_of, shift_month
+from .models import GOLD_SYMBOL, HOME_CURRENCY, AssetType, Kind, format_amount, format_money, month_of, shift_month
 from .portfolio import Return, account_balances, close_on, combine, holding_returns, period_start
 from .prices import PriceService, PriceUnavailable
 from .reports import group_purchases, value_holdings
@@ -196,6 +196,11 @@ def _previous_months(store: Store, month: str) -> List[str]:
     return [m for m in previous if m >= first]
 
 
+def _paid(tx: Any) -> str:
+    """' (paid NT$350)' for a transaction in another currency; amounts in facts are USD."""
+    return f" (paid {format_amount(tx.paid_cents, tx.currency)})" if tx.currency != HOME_CURRENCY else ""
+
+
 def month_facts(store: Store, month: str, today: date) -> str:
     """Everything the model is told about ``month``, as plain text."""
     lines: List[str] = [_month_header(month, today)]
@@ -280,7 +285,7 @@ def month_facts(store: Store, month: str, today: date) -> str:
         for tx in biggest:
             lines.append(
                 f"- {tx.occurred_on:%b %d}: {tx.description} ({tx.category}) "
-                f"{format_money(tx.amount_cents)}{' [covered]' if tx.category in covered_set else ''}"
+                f"{format_money(tx.amount_cents)}{_paid(tx)}{' [covered]' if tx.category in covered_set else ''}"
             )
 
     rules = [r for r in store.recurring_rules() if r.active and r.kind is Kind.EXPENSE]
@@ -289,7 +294,7 @@ def month_facts(store: Store, month: str, today: date) -> str:
         lines.append("Active recurring expenses:")
         for rule in rules:
             lines.append(
-                f"- {rule.description} ({rule.category}): {format_money(rule.amount_cents)} "
+                f"- {rule.description} ({rule.category}): {format_amount(rule.amount_cents, rule.currency)} "
                 f"{rule.frequency.value}{' [covered]' if rule.category in covered_set else ''}"
             )
 
@@ -396,7 +401,7 @@ def focus_facts(store: Store, month: str, categories: Sequence[str], today: date
         for tx in sorted(expenses, key=lambda t: t.amount_cents, reverse=True)[:5]:
             lines.append(
                 f"- {tx.occurred_on:%b %d}: {tx.description} ({tx.category}) "
-                f"{format_money(tx.amount_cents)}{' [covered]' if tx.category in covered_here else ''}"
+                f"{format_money(tx.amount_cents)}{_paid(tx)}{' [covered]' if tx.category in covered_here else ''}"
             )
 
     # ---- totals and averages
@@ -481,7 +486,7 @@ def focus_facts(store: Store, month: str, categories: Sequence[str], today: date
         lines.append("Active recurring expenses in these categories:")
         for rule in rules:
             lines.append(
-                f"- {rule.description} ({rule.category}): {format_money(rule.amount_cents)} "
+                f"- {rule.description} ({rule.category}): {format_amount(rule.amount_cents, rule.currency)} "
                 f"{rule.frequency.value}{' [covered]' if rule.category in covered_here else ''}"
             )
 
@@ -543,7 +548,7 @@ def holdings_facts(store: Store, service: PriceService, today: date) -> str:
     holdings = store.holdings()
     cash = [h for h in holdings if h.asset_type is AssetType.CASH]
     balances = account_balances(cash, store.account_changes(today))
-    report = value_holdings(holdings, service.quote, balances)
+    report = value_holdings(holdings, service.quote, balances, fx=service.fx_rate)
     invested = [line for line in report.lines if line.holding.asset_type.is_market_priced and line.value_cents is not None]
     invested_total = sum(line.value_cents for line in invested)
     cash_total = sum(line.value_cents or 0 for line in report.lines if line.holding.asset_type is AssetType.CASH)

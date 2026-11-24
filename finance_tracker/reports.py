@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from .models import Holding, Transaction, shift_month
+from .models import Holding, Transaction, shift_month, to_home_cents
 from .prices import PriceUnavailable, Quote
 
 # ------------------------------------------------------------- purchases
@@ -138,15 +138,26 @@ def value_holdings(
     holdings: Sequence[Holding],
     quote: Callable[[str], Quote],
     balances: Optional[Dict[int, int]] = None,
+    fx: Optional[Callable[[str], float]] = None,
 ) -> NetWorthReport:
-    """Value everything. ``balances`` overrides cash accounts' hand-entered
-    values with their balance now (see ``portfolio.account_balances``)."""
+    """Value everything in USD. ``balances`` overrides cash accounts'
+    hand-entered values with their balance now (see
+    ``portfolio.account_balances``), in each account's currency; ``fx(code)``
+    gives units of that currency per US dollar."""
     lines = []
     balances = balances or {}
     for holding in holdings:
         if not holding.asset_type.is_market_priced:
             value = balances.get(holding.id, holding.manual_value_cents) if holding.id is not None \
                 else holding.manual_value_cents
+            if value is not None and holding.currency != "USD":
+                try:
+                    if fx is None:
+                        raise PriceUnavailable("no exchange rates available")
+                    value = to_home_cents(value, fx(holding.currency))
+                except PriceUnavailable as exc:
+                    lines.append(HoldingValue(holding, None, note=f"not counted: no {holding.currency} rate ({exc})"))
+                    continue
             lines.append(HoldingValue(holding, value))
             continue
         try:

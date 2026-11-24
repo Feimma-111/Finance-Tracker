@@ -1,5 +1,5 @@
 import { api } from "../api";
-import { dateShort, FREQUENCIES, money, todayIso } from "../format";
+import { dateShort, FREQUENCIES, moneyIn, todayIso } from "../format";
 import { useAsync } from "../hooks";
 import { CategoryIcon } from "../icons";
 
@@ -45,7 +45,7 @@ export function Upcoming({ version }: { version: number }) {
             </span>
           </div>
           <span className={`tx-amount num ${rule.kind === "income" ? "amount-income" : ""}`}>
-            {rule.kind === "income" ? "+" : ""}{money(rule.amount_cents)}
+            {rule.kind === "income" ? "+" : ""}{moneyIn(rule.amount_cents, rule.currency)}
           </span>
         </li>
       ))}

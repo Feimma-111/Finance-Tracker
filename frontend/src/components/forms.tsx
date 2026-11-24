@@ -1,8 +1,14 @@
 import { useState, type FormEvent } from "react";
 import { api, type AssetType, type Frequency, type Kind, type Quote } from "../api";
-import { ASSET_TYPES, dateLabel, FREQUENCIES, frequencyText, money, todayIso } from "../format";
+import { ASSET_TYPES, currencySymbol, dateLabel, FREQUENCIES, frequencyText, moneyIn, todayIso } from "../format";
 import { useAsync } from "../hooks";
 import { AccountField, lastAccount, rememberAccount, useCashAccounts } from "./AccountField";
+
+const CURRENCY_CHOICES: [string, string][] = [
+  ["USD", "US dollar ($)"], ["TWD", "New Taiwan dollar (NT$)"], ["CNY", "Chinese yuan (CN¥)"],
+  ["HKD", "Hong Kong dollar (HK$)"], ["JPY", "Japanese yen (¥)"], ["KRW", "Korean won (₩)"],
+  ["EUR", "Euro (€)"], ["GBP", "British pound (£)"], ["CAD", "Canadian dollar (CA$)"],
+];
 
 function oneYearFromToday(): string {
   const [y, m, d] = todayIso().split("-");
@@ -14,7 +20,26 @@ function oneYearFromToday(): string {
    this form just shows the server's message if something's off. */
 
 export function TransactionForm({ onSaved, version }: { onSaved: () => void; version: number }) {
-  const [kind, setKind] = useState<Kind>("expense");
+  const [mode, setMode] = useState<Kind | "transfer">("expense");
+  return (
+    <div className="form">
+      <div className="segmented" role="group" aria-label="Transaction type">
+        {(["expense", "income", "transfer"] as const).map((k) => (
+          <button key={k} type="button" aria-pressed={mode === k} onClick={() => setMode(k)}>
+            {k === "expense" ? "Expense" : k === "income" ? "Income" : "Transfer"}
+          </button>
+        ))}
+      </div>
+      {mode === "transfer" ? (
+        <TransferForm onSaved={onSaved} version={version} />
+      ) : (
+        <EntryForm kind={mode} onSaved={onSaved} version={version} />
+      )}
+    </div>
+  );
+}
+
+function EntryForm({ kind, onSaved, version }: { kind: Kind; onSaved: () => void; version: number }) {
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState("");
@@ -32,7 +57,12 @@ export function TransactionForm({ onSaved, version }: { onSaved: () => void; ver
   const covered = (settings.data?.covered_categories ?? []).some(
     (c) => c.toLowerCase() === category.trim().toLowerCase(),
   );
-  const accountId = accountChoice !== undefined ? accountChoice : covered ? null : lastAccount(accounts);
+  // Travel mode's account wins over the last one used.
+  const travel = settings.data?.travel_account_id ?? null;
+  const fallback = travel !== null && accounts.some((a) => a.id === travel) ? travel : lastAccount(accounts);
+  const accountId = accountChoice !== undefined ? accountChoice : covered ? null : fallback;
+  // The amount is typed in the account's currency.
+  const currency = accounts.find((a) => a.id === accountId)?.currency ?? "USD";
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -52,7 +82,7 @@ export function TransactionForm({ onSaved, version }: { onSaved: () => void; ver
         setDate(todayIso());
       } else {
         const saved = await api.addTransaction({ kind, description, amount, category, occurred_on: date, account_id: accountId });
-        setMessage({ text: `Saved ${money(saved.amount_cents)} for ${saved.description}.`, error: false });
+        setMessage({ text: `Saved ${moneyIn(saved.paid_cents, saved.currency)} for ${saved.description}.`, error: false });
       }
       setDescription("");
       setAmount("");
@@ -68,13 +98,6 @@ export function TransactionForm({ onSaved, version }: { onSaved: () => void; ver
 
   return (
     <form className="form" onSubmit={submit}>
-      <div className="segmented" role="group" aria-label="Transaction type">
-        {(["expense", "income"] as Kind[]).map((k) => (
-          <button key={k} type="button" aria-pressed={kind === k} onClick={() => setKind(k)}>
-            {k === "expense" ? "Expense" : "Income"}
-          </button>
-        ))}
-      </div>
       <label className="field">
         <span>Description</span>
         <input
@@ -89,7 +112,7 @@ export function TransactionForm({ onSaved, version }: { onSaved: () => void; ver
         <label className="field">
           <span>Amount</span>
           <div className="money-input">
-            <i>$</i>
+            <i>{currencySymbol(currency)}</i>
             <input type="text" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" required />
           </div>
         </label>
@@ -163,6 +186,114 @@ export function TransactionForm({ onSaved, version }: { onSaved: () => void; ver
   );
 }
 
+/* ------------------------------------------------------------------ transfer between your accounts
+   Not spending or income: it only moves money between two balances. Between
+   currencies, "received" is prefilled at today's rate by the server if left
+   blank -- type what your bank actually gave you when you know it. */
+
+function TransferForm({ onSaved, version }: { onSaved: () => void; version: number }) {
+  const accounts = useCashAccounts(version);
+  const [from, setFrom] = useState<number | null>(null);
+  const [to, setTo] = useState<number | null>(null);
+  const [amount, setAmount] = useState("");
+  const [received, setReceived] = useState("");
+  const [date, setDate] = useState(todayIso());
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
+
+  if (accounts.length < 2) {
+    return <p className="hint" style={{ margin: 0 }}>Add at least two cash accounts on the Holdings page to move money between them.</p>;
+  }
+  const source = accounts.find((a) => a.id === (from ?? accounts[0].id))!;
+  const target = accounts.find((a) => a.id === (to ?? accounts.find((a) => a.id !== source.id)!.id))!;
+  const converting = source.currency !== target.currency;
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setMessage(null);
+    try {
+      const saved = await api.addTransfer({
+        from_account_id: source.id, to_account_id: target.id, amount,
+        received: converting && received.trim() ? received : undefined, occurred_on: date, note,
+      });
+      setMessage({
+        text: `Moved ${moneyIn(saved.from_cents, saved.from_currency)} to ${saved.to_name}` +
+          (converting ? ` (${moneyIn(saved.to_cents, saved.to_currency)} received).` : "."),
+        error: false,
+      });
+      setAmount("");
+      setReceived("");
+      setNote("");
+      onSaved();
+    } catch (error) {
+      setMessage({ text: (error as Error).message, error: true });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const pick = (value: number, set: (id: number) => void) => (
+    <select value={value} onChange={(e) => set(Number(e.target.value))}>
+      {accounts.map((a) => (
+        <option key={a.id} value={a.id}>{a.name}{a.currency !== "USD" ? ` (${a.currency})` : ""}</option>
+      ))}
+    </select>
+  );
+
+  return (
+    <form className="form" onSubmit={submit}>
+      <div className="field-row">
+        <label className="field"><span>From</span>{pick(source.id, setFrom)}</label>
+        <label className="field"><span>To</span>{pick(target.id, setTo)}</label>
+      </div>
+      <div className="field-row">
+        <label className="field">
+          <span>Amount sent</span>
+          <div className="money-input">
+            <i>{currencySymbol(source.currency)}</i>
+            <input type="text" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" required />
+          </div>
+        </label>
+        {converting ? (
+          <label className="field">
+            <span>Amount received</span>
+            <div className="money-input">
+              <i>{currencySymbol(target.currency)}</i>
+              <input type="text" inputMode="decimal" value={received} onChange={(e) => setReceived(e.target.value)} placeholder="today's rate" />
+            </div>
+          </label>
+        ) : (
+          <label className="field">
+            <span>Date</span>
+            <input type="date" value={date} max={todayIso()} onChange={(e) => setDate(e.target.value)} />
+          </label>
+        )}
+      </div>
+      {converting && (
+        <label className="field">
+          <span>Date</span>
+          <input type="date" value={date} max={todayIso()} onChange={(e) => setDate(e.target.value)} />
+        </label>
+      )}
+      <label className="field">
+        <span>Note (optional)</span>
+        <input type="text" value={note} onChange={(e) => setNote(e.target.value)} placeholder={converting ? "e.g. Wise" : "e.g. to savings"} maxLength={200} />
+      </label>
+      <p className="hint" style={{ margin: 0 }}>
+        Transfers move money between your own accounts. They change both balances but never count as spending or income.
+      </p>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <button className="btn btn-primary" type="submit" disabled={busy || source.id === target.id}>
+          {busy ? "Saving…" : "Move money"}
+        </button>
+        {message && <span className={`message ${message.error ? "error" : "success"}`}>{message.text}</span>}
+      </div>
+    </form>
+  );
+}
+
 /* ------------------------------------------------------------------ add a holding */
 
 export function HoldingForm({ onSaved }: { onSaved: () => void }) {
@@ -171,6 +302,7 @@ export function HoldingForm({ onSaved }: { onSaved: () => void }) {
   const [symbol, setSymbol] = useState("");
   const [quantity, setQuantity] = useState("");
   const [value, setValue] = useState("");
+  const [currency, setCurrency] = useState("USD");
   const [boughtOn, setBoughtOn] = useState("");
   const [avgPrice, setAvgPrice] = useState("");
   const [quote, setQuote] = useState<{ quote?: Quote; error?: string; symbol: string } | null>(null);
@@ -204,6 +336,7 @@ export function HoldingForm({ onSaved }: { onSaved: () => void }) {
         symbol: needsSymbol ? symbol : undefined,
         quantity: priced ? qty : undefined,
         value: priced ? undefined : value,
+        currency: type === "cash" ? currency : undefined,
         bought_on: priced && boughtOn ? boughtOn : undefined,
         avg_price: priced && avgPrice.trim() ? avgPrice : undefined,
       });
@@ -288,7 +421,7 @@ export function HoldingForm({ onSaved }: { onSaved: () => void }) {
           <label className="field">
             <span>{type === "cash" ? "Balance today" : "Current value"}</span>
             <div className="money-input">
-              <i>$</i>
+              <i>{currencySymbol(type === "cash" ? currency : "USD")}</i>
               <input type="text" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} placeholder="0.00" required />
             </div>
           </label>
@@ -313,6 +446,14 @@ export function HoldingForm({ onSaved }: { onSaved: () => void }) {
         <p className="hint" style={{ margin: 0 }}>
           With these, the app shows how much it's gained since you bought it, and over any period.
         </p>
+      )}
+      {type === "cash" && (
+        <label className="field">
+          <span>Currency</span>
+          <select value={currency} onChange={(e) => setCurrency(e.target.value)}>
+            {CURRENCY_CHOICES.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
+          </select>
+        </label>
       )}
       {type === "cash" && (
         <p className="hint" style={{ margin: 0 }}>

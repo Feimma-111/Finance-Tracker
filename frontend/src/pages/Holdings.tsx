@@ -4,7 +4,7 @@ import { AiStatusLine, isOnline } from "../components/AiParts";
 import { AllocationDonut, NetWorthChart } from "../components/charts";
 import { HoldingForm } from "../components/forms";
 import { Sheet } from "../components/Sheet";
-import { assetMeta, dateLabel, money, quantity, seriesVar, signedMoney } from "../format";
+import { assetMeta, currencySymbol, dateLabel, money, moneyIn, quantity, seriesVar, signedMoney } from "../format";
 import { useAsync } from "../hooks";
 import { AssetIcon } from "../icons";
 
@@ -395,13 +395,17 @@ function HoldingsTable({ lines, onEdit }: { lines: NetWorthLine[]; onEdit: (line
   );
 }
 
-/** "Updated Nov 22 · −$25.50 since, from linked transactions". */
+/** "NT$31,650 · updated Nov 22 · −NT$350 since" -- in the account's own currency. */
 function BalanceNote({ line }: { line: NetWorthLine }) {
-  if (!line.balance_as_of) return <div className="subtle">Update the balance to start following it</div>;
+  const foreign = line.currency !== "USD";
+  const own = (cents: number) => moneyIn(cents, line.currency);
+  const balance = foreign && line.balance_cents !== null ? `${own(line.balance_cents)} · ` : "";
+  if (!line.balance_as_of) return <div className="subtle">{balance}Update the balance to start following it</div>;
+  const change = line.balance_change_cents;
   return (
     <div className="subtle">
-      Updated {dateLabel(line.balance_as_of)}
-      {line.balance_change_cents !== 0 && ` · ${signedMoney(line.balance_change_cents)} since, from linked transactions`}
+      {balance}Updated {dateLabel(line.balance_as_of)}
+      {change !== 0 && ` · ${change > 0 ? "+" : ""}${own(change)} since`}
     </div>
   );
 }
@@ -413,8 +417,10 @@ function EditHoldingSheet({ line, onClose, onSaved }: { line: NetWorthLine; onCl
   const [name, setName] = useState(line.name);
   const [symbol, setSymbol] = useState(line.symbol ?? "");
   const [qty, setQty] = useState(String(line.quantity));
-  // Cash shows the balance now (with linked transactions); saving it makes that the new starting point.
-  const [value, setValue] = useState((((cash ? line.value_cents : line.manual_value_cents) ?? 0) / 100).toFixed(2));
+  // Cash shows the balance now (with linked transactions), in the account's
+  // own currency; saving a new one makes that the starting point.
+  const startValue = (((cash ? line.balance_cents : line.manual_value_cents) ?? 0) / 100).toFixed(2);
+  const [value, setValue] = useState(startValue);
   const [boughtOn, setBoughtOn] = useState(line.bought_on ?? "");
   const [avgPrice, setAvgPrice] = useState(
     line.cost_basis_cents !== null && line.quantity ? (line.cost_basis_cents / 100 / line.quantity).toFixed(2) : "",
@@ -422,7 +428,7 @@ function EditHoldingSheet({ line, onClose, onSaved }: { line: NetWorthLine; onCl
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const originalValue = (((cash ? line.value_cents : line.manual_value_cents) ?? 0) / 100).toFixed(2);
+  const originalValue = startValue;
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -496,7 +502,7 @@ function EditHoldingSheet({ line, onClose, onSaved }: { line: NetWorthLine; onCl
           <label className="field">
             <span>{cash ? "Balance today" : "Current value"}</span>
             <div className="money-input">
-              <i>$</i>
+              <i>{currencySymbol(line.currency)}</i>
               <input type="text" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} required />
             </div>
             {cash && (

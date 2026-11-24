@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api, type RecurringRule } from "../api";
-import { dateLabel, frequencyText, money } from "../format";
+import { dateLabel, frequencyText, moneyIn } from "../format";
 import { useAsync } from "../hooks";
 
 /** Recurring rules with pause/resume, change amount, and delete. */
@@ -54,7 +54,7 @@ export function RecurringList({ version, onChanged }: { version: number; onChang
                 aria-label="New amount"
               />
             ) : (
-              <>{rule.kind === "income" ? "+" : "−"}{money(rule.amount_cents)}</>
+              <>{rule.kind === "income" ? "+" : "−"}{moneyIn(rule.amount_cents, rule.currency)}</>
             )}
           </div>
           <div className="row-actions">

@@ -19,8 +19,9 @@ it lives in a file on your own machine.
   is pacing against last month. Tick a few categories to chart just those, or
   click a slice to see what one category was made of.
 - **Money you have:** bank accounts whose balances follow the transactions you
-  link to them (your *liquid* total), plus stocks, crypto, and gold priced
-  live, with gains since you bought and over any period, Robinhood style.
+  link to them (your *liquid* total), in US dollars or other currencies like
+  NT$, with transfers between them; plus stocks, crypto, and gold priced live,
+  with gains since you bought and over any period, Robinhood style.
 - **AI analyst:** monthly reviews, a close look at the categories you pick, a
   chat that answers questions from exact lookups, and a description of your
   investments and the market. Every number is computed by the app, never by
@@ -269,10 +270,13 @@ Every endpoint except `/api/auth/...` requires a signed-in session.
 | GET | `/api/quotes/{symbol}` | live price (used to check tickers) |
 | GET | `/api/net-worth` | value everything (cash accounts with their linked transactions), liquid total; records today's snapshot |
 | GET | `/api/portfolio?period=` | investment gains since buying, over 1W–All, and today, plus the chart |
+| GET / POST | `/api/transfers` | moves between your own accounts / record one (converting currencies if needed) |
+| DELETE | `/api/transfers/{id}` | remove one |
+| GET | `/api/fx?currency=` | today's exchange rate, in units per US dollar |
 | GET | `/api/net-worth/history` | daily snapshots for the trend chart |
 | GET / POST | `/api/recurring` | recurring rules / add one (past occurrences filled in) |
 | PATCH / DELETE | `/api/recurring/{id}` | pause, resume, change amount / stop |
-| GET / PUT | `/api/settings` | theme; AI address and model |
+| GET / PUT | `/api/settings` | theme; AI address and model; covered categories; display currency; travel mode |
 | PUT | `/api/profile` | rename |
 | GET | `/api/ai/status` | is the PC reachable, and which models it has |
 | GET / POST | `/api/ai/reviews/{month}` | last saved review / write a new one |
@@ -400,6 +404,36 @@ or holding anything, and never to predict prices. The headlines are labeled as
 third-party text, and the model is told not to follow instructions inside them.
 Like the other AI panels, results last for the browser session.
 
+### More than one currency, and travel mode
+
+**Accounts in other currencies.** When adding a cash account, pick its
+currency (US dollar, New Taiwan dollar, and a few others). A transaction is
+always in its account's currency: spending from an NT$ account is entered in
+NT$, and a purchase abroad on a US card is entered in the dollars the card
+charged. Each transaction keeps what was actually paid, plus its value in US
+dollars on that day, using daily exchange rates from Yahoo. Every report adds
+up those dollar values, so past months never change when the rate moves. An
+NT$ account's balance moves in NT$.
+
+**Transfers.** **+ Add → Transfer** moves money between two of your own
+accounts. Between currencies, type what your bank actually gave you, or leave
+it blank to use that day's rate. Transfers change both balances but never
+count as spending or income. They're listed on the Transactions page.
+
+**Display currency.** **Settings → Money & travel** shows every total and
+chart in another currency at today's rate, and US dollars are the default.
+Transactions still show what you paid, with the converted amount beneath when
+it's different.
+
+**Travel mode.** In the same place, pick an account (say, your NT$ bank). While
+it's on, new transactions start out in that account, and a banner says so. You
+can still pick another account, like a US card. It's just a default: trips
+count toward your normal spending.
+
+Recurring rules on an NT$ account repeat in NT$. If no exchange rate is
+available yet (you're offline), an occurrence waits until there is one, rather
+than being saved with a guessed value.
+
 ### Searching transactions
 
 The search box on the Transactions page matches every word you type:
@@ -516,9 +550,9 @@ paused. Stopping a rule keeps the transactions it already created.
 - [x] Category focus with its own AI analysis, chart, and follow-up chat
 - [x] Bank accounts that follow transactions (liquid total); investment gains
       over any period; AI on investments and the market
+- [x] Accounts in more than one currency (NT$), transfers, display currency, travel mode
 - [ ] Next: move to an always-on Raspberry Pi ([plan](docs/raspberry-pi.md))
 - [ ] Later: Wake-on-LAN to turn the PC on from the app
 
-Ideas not built yet: money in more than one currency (and a travel mode that
-converts at today's rates), budgets per category, separate purchase lots per
-investment, and liabilities (loans, credit cards).
+Ideas not built yet: budgets per category, separate purchase lots per
+investment, and liabilities (credit cards as their own accounts, loans).

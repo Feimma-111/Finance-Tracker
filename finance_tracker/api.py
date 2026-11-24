@@ -46,6 +46,10 @@ GET    /api/net-worth                value everything at live prices
 GET    /api/net-worth/history        daily net-worth snapshots
 GET    /api/portfolio?period=        investment gains (since buying, over a period, today) + chart
 POST   /api/ai/holdings              the AI on your investments and the market (not saved)
+GET    /api/transfers                moves between your own accounts
+POST   /api/transfers                record one (converts currencies at that day's rate if needed)
+DELETE /api/transfers/{id}           remove one
+GET    /api/fx?currency=             today's exchange rate (units per US dollar)
 GET    /api/recurring                recurring rules (rent, subscriptions...)
 POST   /api/recurring                create one (past occurrences are filled in)
 PATCH  /api/recurring/{id}           pause/resume or change the amount
@@ -96,14 +100,20 @@ from .analyst import (
 )
 from .assistant import ask
 from .models import (
+    CURRENCIES,
     GOLD_SYMBOL,
+    HOME_CURRENCY,
     AssetType,
     Frequency,
     Holding,
     Kind,
     RecurringRule,
     Transaction,
+    Transfer,
     cents_to_plain,
+    check_currency,
+    fx_symbol,
+    to_home_cents,
     month_of,
     parse_date,
     parse_money,
@@ -139,6 +149,7 @@ class HoldingIn(BaseModel):
     symbol: Optional[str] = Field(None, max_length=20)
     quantity: Optional[float] = None
     value: Optional[str] = Field(None, description="Dollar value, for cash and other")
+    currency: Optional[str] = Field(None, max_length=3, description="cash accounts: the balance's currency (USD default)")
     bought_on: Optional[str] = Field(None, description="YYYY-MM-DD first bought (investments)")
     avg_price: Optional[str] = Field(None, max_length=30, description="average price paid per unit, e.g. '210.50'")
 
@@ -243,6 +254,18 @@ class SettingsIn(BaseModel):
     ai_model: Optional[str] = Field(None, max_length=100)
     covered_categories: Optional[List[str]] = Field(None, max_length=50)
     covered_note: Optional[str] = Field(None, max_length=120)
+    display_currency: Optional[str] = Field(None, max_length=3)
+    travel_account_id: Optional[int] = Field(None, description="travel mode's account; null turns it off")
+
+
+class TransferIn(BaseModel):
+    from_account_id: int
+    to_account_id: int
+    amount: str = Field(description="what left the first account, in its currency")
+    received: Optional[str] = Field(None, description="what arrived, in the second account's currency; "
+                                                      "blank = converted at that day's rate")
+    occurred_on: Optional[str] = None
+    note: str = Field("", max_length=200)
 
 
 # --------------------------------------------------------------------- app
@@ -284,13 +307,39 @@ def create_app(
         daily_backup()
         store = Store(db_path, check_same_thread=False)
         try:
-            store.apply_recurring(today())
+            catch_up(store)
             yield store
         finally:
             store.close()
 
     def price_service(store: Store) -> PriceService:
         return PriceService(store, provider)
+
+    def catch_up(store: Store) -> int:
+        """Create recurring transactions that are due. Rules in another
+        currency need that day's exchange rate, so fetch it first (cached;
+        offline, those occurrences simply wait)."""
+        due = store.currencies_due(today())
+        if due:
+            service = price_service(store)
+            for currency in due:
+                service.history(fx_symbol(currency))
+                try:
+                    service.quote(fx_symbol(currency))
+                except PriceUnavailable:
+                    pass
+        return store.apply_recurring(today())
+
+    def convert(store: Store, account_id: Optional[int], paid_cents: int, day: date):
+        """(USD cents, currency, original cents) for an amount in the account's currency."""
+        currency = store.get_holding(account_id).currency if account_id is not None else HOME_CURRENCY
+        if currency == HOME_CURRENCY:
+            return paid_cents, currency, None
+        try:
+            rate = price_service(store).fx_rate(currency, day)
+        except PriceUnavailable:
+            raise HTTPException(503, f"Couldn't get the {currency} exchange rate. Try again when you're online.") from None
+        return to_home_cents(paid_cents, rate), currency, paid_cents
 
     # ------------------------------------------------------- passcode lock
     # Every /api/ request except /api/auth/... needs a signed-in session.
@@ -432,6 +481,10 @@ def create_app(
             "ai_model": store.get_setting("ai_model", ""),
             "covered_categories": store.covered_categories()[0],
             "covered_note": store.get_setting("covered_note", ""),
+            "display_currency": display if (display := store.get_setting("display_currency", "USD")) in CURRENCIES else "USD",
+            "travel_account_id": _travel_account(store),
+            "currencies": [{"code": code, "symbol": symbol, "decimals": decimals}
+                           for code, (symbol, decimals) in CURRENCIES.items()],
         }
 
     @app.get("/api/settings")
@@ -460,7 +513,26 @@ def create_app(
         if body.covered_note is not None:
             store.set_setting("covered_note", body.covered_note.strip())
             store.mark_facts_changed()
+        if body.display_currency is not None:
+            try:
+                store.set_setting("display_currency", check_currency(body.display_currency))
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from None
+        if "travel_account_id" in body.model_fields_set:
+            store.set_setting("travel_account_id", str(_account_or_400(store, body.travel_account_id) or ""))
         return settings_json(store)
+
+    @app.get("/api/fx")
+    def exchange_rate(currency: str, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """How many units of ``currency`` one US dollar buys right now (for the display currency)."""
+        try:
+            code = check_currency(currency)
+            rate = price_service(store).fx_rate(code)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except PriceUnavailable as exc:
+            raise HTTPException(503, f"no exchange rate for {currency}: {exc}") from None
+        return {"currency": code, "rate": rate}
 
     # --------------------------------------------------------- AI analyst
 
@@ -602,11 +674,14 @@ def create_app(
                 start_on=parse_date(body.start_on or "", today=today(), allow_future=True),
                 kind=body.kind,
                 account_id=_account_or_400(store, body.account_id),
+                # The amount is in the account's currency, like a transaction's.
+                currency=(store.get_holding(body.account_id).currency if body.account_id is not None
+                          else HOME_CURRENCY),
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
         rule_id = store.add_recurring(rule)
-        created = store.apply_recurring(today())  # fill in any occurrences already due
+        created = catch_up(store)  # fill in any occurrences already due
         return {**_rule_json(store.get_recurring(rule_id)), "created": created}
 
     @app.patch("/api/recurring/{rule_id}")
@@ -623,7 +698,7 @@ def create_app(
             raise HTTPException(400, str(exc)) from None
         if not store.update_recurring(rule_id, today=today(), active=body.active, amount_cents=cents):
             raise HTTPException(404, f"no recurring rule with id {rule_id}")
-        store.apply_recurring(today())  # resuming may make today's occurrence due
+        catch_up(store)  # resuming may make today's occurrence due
         return _rule_json(store.get_recurring(rule_id))
 
     @app.delete("/api/recurring/{rule_id}", status_code=204)
@@ -671,16 +746,21 @@ def create_app(
     @app.post("/api/transactions", status_code=201)
     def add_transaction(body: TransactionIn, store: Store = Depends(get_store)) -> Dict[str, Any]:
         try:
-            cents = parse_money(body.amount)
-            if cents <= 0:
+            paid = parse_money(body.amount)
+            if paid <= 0:
                 raise ValueError("amount must be greater than zero")
+            account_id = _account_or_400(store, body.account_id)
+            occurred_on = parse_date(body.occurred_on or "", today=today())
+            home, currency, original = convert(store, account_id, paid, occurred_on)
             tx = Transaction(
                 description=body.description.strip(),
-                amount_cents=cents,
+                amount_cents=home,
                 category=body.category,
-                occurred_on=parse_date(body.occurred_on or "", today=today()),
+                occurred_on=occurred_on,
                 kind=body.kind,
-                account_id=_account_or_400(store, body.account_id),
+                account_id=account_id,
+                currency=currency,
+                original_cents=original,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
@@ -703,21 +783,30 @@ def create_app(
         if current is None:
             raise HTTPException(404, f"no transaction with id {tx_id}")
         try:
-            cents = current.amount_cents
+            account_id = (
+                _account_or_400(store, body.account_id)
+                if "account_id" in body.model_fields_set else current.account_id
+            )
+            currency = store.get_holding(account_id).currency if account_id is not None else HOME_CURRENCY
             if body.amount is not None:
-                cents = parse_money(body.amount)
-                if cents <= 0:
+                paid = parse_money(body.amount)
+                if paid <= 0:
                     raise ValueError("amount must be greater than zero")
+            elif currency != current.currency:
+                raise ValueError(f"that account is in {currency}; enter the amount in {currency}")
+            else:
+                paid = current.paid_cents
+            occurred_on = parse_date(body.occurred_on, today=today()) if body.occurred_on else current.occurred_on
+            home, currency, original = convert(store, account_id, paid, occurred_on)
             updated = Transaction(
                 description=(body.description if body.description is not None else current.description).strip(),
-                amount_cents=cents,
+                amount_cents=home,
                 category=body.category if body.category is not None else current.category,
-                occurred_on=parse_date(body.occurred_on, today=today()) if body.occurred_on else current.occurred_on,
+                occurred_on=occurred_on,
                 kind=body.kind or current.kind,
-                account_id=(
-                    _account_or_400(store, body.account_id)
-                    if "account_id" in body.model_fields_set else current.account_id
-                ),
+                account_id=account_id,
+                currency=currency,
+                original_cents=original,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
@@ -800,11 +889,13 @@ def create_app(
     def export_csv(store: Store = Depends(get_store)) -> Response:
         buffer = io.StringIO()
         writer = csv.writer(buffer)
-        writer.writerow(["id", "date", "kind", "category", "description", "amount"])
+        # "amount" is in US dollars; "amount_paid" in "currency" (the same for USD).
+        writer.writerow(["id", "date", "kind", "category", "description", "amount", "currency", "amount_paid"])
         for tx in reversed(store.transactions()):
             writer.writerow([
                 tx.id, tx.occurred_on.isoformat(), tx.kind.value,
                 tx.category, tx.description, cents_to_plain(tx.amount_cents),
+                tx.currency, cents_to_plain(tx.paid_cents),
             ])
         filename = f"transactions-{today().isoformat()}.csv"
         return Response(
@@ -1018,6 +1109,47 @@ def create_app(
             "stale": q.stale,
         }
 
+    # ---------------------------------------------------- transfers
+
+    @app.get("/api/transfers")
+    def list_transfers(store: Store = Depends(get_store)) -> List[Dict[str, Any]]:
+        names = {h.id: h for h in store.holdings()}
+        return [_transfer_json(t, names) for t in store.transfers()]
+
+    @app.post("/api/transfers", status_code=201)
+    def add_transfer(body: TransferIn, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """Move money between two of your own accounts. Not spending or income."""
+        for account_id in (body.from_account_id, body.to_account_id):
+            _account_or_400(store, account_id)
+        source = store.get_holding(body.from_account_id)
+        target = store.get_holding(body.to_account_id)
+        try:
+            occurred_on = parse_date(body.occurred_on or "", today=today())
+            sent = parse_money(body.amount)
+            if body.received and body.received.strip():
+                received = parse_money(body.received)
+            elif source.currency == target.currency:
+                received = sent
+            else:  # e.g. USD -> NT$ at that day's rate; your bank's rate may differ, so it can be typed
+                service = price_service(store)
+                try:
+                    usd = to_home_cents(sent, service.fx_rate(source.currency, occurred_on))
+                    received = round(usd * service.fx_rate(target.currency, occurred_on))
+                except PriceUnavailable:
+                    raise HTTPException(503, "Couldn't get the exchange rate. Enter the amount received.") from None
+            transfer = Transfer(occurred_on, source.id, target.id, sent, received, body.note)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        transfer_id = store.add_transfer(transfer)
+        names = {h.id: h for h in store.holdings()}
+        return _transfer_json(next(t for t in store.transfers() if t.id == transfer_id), names)
+
+    @app.delete("/api/transfers/{transfer_id}", status_code=204)
+    def delete_transfer(transfer_id: int, store: Store = Depends(get_store)) -> Response:
+        if not store.delete_transfer(transfer_id):
+            raise HTTPException(404, f"no transfer with id {transfer_id}")
+        return Response(status_code=204)
+
     # ---------------------------------------------------- net worth
 
     @app.get("/api/net-worth")
@@ -1031,7 +1163,8 @@ def create_app(
         holdings = store.holdings()
         changes = store.account_changes(today())
         balances = portfolio.account_balances([h for h in holdings if h.asset_type is AssetType.CASH], changes)
-        report = reports.value_holdings(holdings, price_service(store).quote, balances)
+        service = price_service(store)
+        report = reports.value_holdings(holdings, service.quote, balances, fx=service.fx_rate)
         previous = None
         if holdings and report.complete:
             previous = store.latest_snapshot_before(today())
@@ -1045,8 +1178,9 @@ def create_app(
 
         return {
             "total_cents": report.total_cents,
-            # Cash accounts only: what you could spend right now.
-            "liquid_cents": sum(balances.values()),
+            # Cash accounts only (in USD): what you could spend right now.
+            "liquid_cents": sum(line.value_cents or 0 for line in report.lines
+                                if line.holding.asset_type is AssetType.CASH),
             "complete": report.complete,
             "change_cents": report.total_cents - previous[1] if previous else None,
             "change_since": previous[0].isoformat() if previous else None,
@@ -1060,7 +1194,9 @@ def create_app(
                     "value_cents": line.value_cents,
                     "unit_price": line.unit_price,
                     "note": line.note,
-                    # Cash: how much linked transactions moved it since balance_as_of.
+                    # Cash, in the account's own currency: the balance now, and how much
+                    # linked transactions and transfers moved it since balance_as_of.
+                    "balance_cents": balances.get(line.holding.id),
                     "balance_change_cents": changes.get(line.holding.id, 0),
                 }
                 for line in report.lines
@@ -1254,9 +1390,10 @@ def _build_holding(body: HoldingIn, today: date) -> Holding:
             raise ValueError("enter a symbol, e.g. AAPL")
         name = (body.name or "").strip() or symbol
         return Holding(body.asset_type, name, quantity, symbol=symbol, bought_on=bought_on, cost_basis_cents=cost)
-    as_of = today if body.asset_type is AssetType.CASH else None
+    cash = body.asset_type is AssetType.CASH
     return Holding(body.asset_type, (body.name or "").strip(), manual_value_cents=_value(body.value),
-                   balance_as_of=as_of)
+                   balance_as_of=today if cash else None,
+                   currency=check_currency(body.currency or HOME_CURRENCY) if cash else HOME_CURRENCY)
 
 
 def _tx_json(tx: Transaction) -> Dict[str, Any]:
@@ -1269,6 +1406,8 @@ def _tx_json(tx: Transaction) -> Dict[str, Any]:
         "kind": tx.kind.value,
         "recurring_id": tx.recurring_id,
         "account_id": tx.account_id,
+        "currency": tx.currency,          # what it was paid in
+        "paid_cents": tx.paid_cents,      # in that currency (amount_cents is always USD)
     }
 
 
@@ -1284,6 +1423,7 @@ def _rule_json(rule: RecurringRule) -> Dict[str, Any]:
         "next_due": rule.next_due.isoformat(),
         "active": rule.active,
         "account_id": rule.account_id,
+        "currency": rule.currency,  # amount_cents is in this currency
     }
 
 
@@ -1298,4 +1438,28 @@ def _holding_json(h: Holding) -> Dict[str, Any]:
         "bought_on": h.bought_on.isoformat() if h.bought_on else None,
         "cost_basis_cents": h.cost_basis_cents,
         "balance_as_of": h.balance_as_of.isoformat() if h.balance_as_of else None,
+        "currency": h.currency,
     }
+
+
+def _transfer_json(t: Transfer, accounts: Dict[int, Holding]) -> Dict[str, Any]:
+    source, target = accounts.get(t.from_account_id), accounts.get(t.to_account_id)
+    return {
+        "id": t.id,
+        "occurred_on": t.occurred_on.isoformat(),
+        "from_account_id": t.from_account_id,
+        "from_name": source.name if source else "?",
+        "from_currency": source.currency if source else HOME_CURRENCY,
+        "from_cents": t.from_cents,
+        "to_account_id": t.to_account_id,
+        "to_name": target.name if target else "?",
+        "to_currency": target.currency if target else HOME_CURRENCY,
+        "to_cents": t.to_cents,
+        "note": t.note,
+    }
+
+
+def _travel_account(store: Store) -> Optional[int]:
+    """Travel mode's account, if it's on and the account still exists."""
+    value = store.get_setting("travel_account_id", "")
+    return int(value) if value.isdigit() and store.is_cash_account(int(value)) else None

@@ -200,6 +200,20 @@ class PriceService:
                 pass
         return self.store.price_history(symbol)
 
+    def fx_rate(self, currency: str, day: Optional[date] = None) -> float:
+        """Units of ``currency`` per US dollar: on ``day`` (that day's close,
+        or the last one before it), or now. Raises PriceUnavailable if there's
+        no rate at all, online or saved."""
+        currency = currency.upper()
+        if currency == "USD":
+            return 1.0
+        symbol = f"{currency}=X"
+        if day is not None and day < self.clock().date():
+            rate = self.store.fx_rate(currency, day) if self.history(symbol) else None
+            if rate:
+                return rate
+        return self.quote(symbol).price
+
     def headlines(self, symbol: str, limit: int = 5) -> List[Tuple[date, str]]:
         """Recent news titles, or none if the provider has no news or is offline."""
         fetch = getattr(self.provider, "headlines", None)

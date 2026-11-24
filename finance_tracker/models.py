@@ -9,6 +9,11 @@ Design notes
   moved. That keeps "how much did I spend on food?" a plain SUM.
 * Dates are ``datetime.date`` objects in Python and ISO strings (YYYY-MM-DD) on
   disk -- the storage-vs-logic boundary from the original version.
+* Currencies: the home currency is USD, and every report adds up USD. A
+  transaction in another currency (from an NT$ account, say) keeps what was
+  actually paid in ``original_cents`` + ``currency`` and its USD value on that
+  day in ``amount_cents``, so past months never change when rates move.
+  Amounts in every currency are stored in hundredths ("cents"), even NT$.
 """
 
 from __future__ import annotations
@@ -22,6 +27,38 @@ from typing import Optional
 
 # Yahoo Finance symbol for gold futures, quoted in USD per troy ounce.
 GOLD_SYMBOL = "GC=F"
+
+HOME_CURRENCY = "USD"
+# Currencies accounts can be in: code -> (symbol, decimals shown).
+CURRENCIES = {
+    "USD": ("$", 2),
+    "TWD": ("NT$", 0),
+    "CNY": ("CN¥", 2),
+    "HKD": ("HK$", 2),
+    "JPY": ("¥", 0),
+    "KRW": ("₩", 0),
+    "EUR": ("€", 2),
+    "GBP": ("£", 2),
+    "CAD": ("CA$", 2),
+}
+
+
+def fx_symbol(currency: str) -> str:
+    """Yahoo's symbol for "units of ``currency`` per US dollar", e.g. TWD=X."""
+    return f"{currency}=X"
+
+
+def check_currency(code: str) -> str:
+    code = (code or "").strip().upper()
+    if code not in CURRENCIES:
+        raise ValueError(f"currency must be one of {', '.join(CURRENCIES)}")
+    return code
+
+
+def to_home_cents(cents: int, rate: float) -> int:
+    """An amount in a currency worth ``rate`` units per USD, in US cents."""
+    value = Decimal(cents) / Decimal(str(rate))
+    return int(value.to_integral_value(rounding=ROUND_HALF_UP))
 
 _CENT = Decimal("0.01")
 _MAX_AMOUNT = Decimal("1000000000000")  # one trillion dollars; anything above is a typo
@@ -70,9 +107,16 @@ class Transaction:
     id: Optional[int] = None
     recurring_id: Optional[int] = None  # set when a recurring rule created it
     account_id: Optional[int] = None    # the cash account (a cash Holding) it was paid from / into
+    currency: str = HOME_CURRENCY       # what it was paid in (its account's currency)
+    original_cents: Optional[int] = None  # the amount in ``currency``; None when that's USD
 
     def __post_init__(self) -> None:
         _check_entry(self.description, self.amount_cents, self.category)
+
+    @property
+    def paid_cents(self) -> int:
+        """The amount in the currency it was paid in."""
+        return self.original_cents if self.original_cents is not None else self.amount_cents
 
 
 @dataclass(frozen=True)
@@ -95,6 +139,7 @@ class RecurringRule:
     active: bool = True
     id: Optional[int] = None
     account_id: Optional[int] = None  # cash account its transactions use
+    currency: str = HOME_CURRENCY     # amount_cents is in this currency (the account's)
 
     def __post_init__(self) -> None:
         _check_entry(self.description, self.amount_cents, self.category)
@@ -145,6 +190,7 @@ class Holding:
     bought_on: Optional[date] = None
     cost_basis_cents: Optional[int] = None
     balance_as_of: Optional[date] = None
+    currency: str = HOME_CURRENCY  # cash accounts: the balance's currency
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -158,6 +204,37 @@ class Holding:
                 raise ValueError(f"{self.asset_type.value} holdings need a market symbol")
         elif self.manual_value_cents is None:
             raise ValueError(f"{self.asset_type.value} holdings need a value")
+
+
+@dataclass(frozen=True)
+class Transfer:
+    """Money moved between two of your own accounts. Not spending or income,
+    so it never shows up in reports -- it only changes the two balances.
+    ``to_cents`` differs from ``from_cents`` when the currencies differ."""
+
+    occurred_on: date
+    from_account_id: int
+    to_account_id: int
+    from_cents: int
+    to_cents: int
+    note: str = ""
+    id: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if self.from_cents <= 0 or self.to_cents <= 0:
+            raise ValueError("amount must be greater than zero")
+        if self.from_account_id == self.to_account_id:
+            raise ValueError("pick two different accounts")
+
+
+def format_amount(cents: int, currency: str = HOME_CURRENCY) -> str:
+    """format_money for any currency: 35000 TWD -> 'NT$350'."""
+    if currency == HOME_CURRENCY:
+        return format_money(cents)
+    symbol, decimals = CURRENCIES.get(currency, (currency + " ", 2))
+    sign = "-" if cents < 0 else ""
+    value = Decimal(abs(cents)) / 100
+    return f"{sign}{symbol}{value:,.{decimals}f}"
 
 
 # --------------------------------------------------------------------- money

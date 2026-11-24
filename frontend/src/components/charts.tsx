@@ -17,7 +17,7 @@ import {
 import type { KeyboardEvent } from "react";
 import type { CategoryReport, MonthRow, NetWorth, Pace, PurchaseReport, Snapshot } from "../api";
 import { CategoryIcon } from "../icons";
-import { assetMeta, dateLabel, dateShort, money, moneyAxis, monthLabel, monthShort, percent, seriesVar } from "../format";
+import { assetMeta, axisWidth, dateLabel, dateShort, money, moneyAxis, monthLabel, monthShort, percent, seriesVar } from "../format";
 import { useChartTheme } from "../hooks";
 
 const axisTick = (color: string) => ({ fill: color, fontSize: 12 });
@@ -84,7 +84,7 @@ export function MonthlyChart({
             interval="preserveStartEnd"
             minTickGap={2}
           />
-          <YAxis tickFormatter={moneyAxis} tickLine={false} axisLine={false} tick={axisTick(t.muted)} width={58} />
+          <YAxis tickFormatter={moneyAxis} tickLine={false} axisLine={false} tick={axisTick(t.muted)} width={axisWidth()} />
           <Tooltip
             cursor={{ fill: t.hover }}
             content={({ active, payload }) => {
@@ -187,7 +187,7 @@ export function NetWorthChart({ history }: { history: Snapshot[] }) {
             tickLine={false}
             axisLine={false}
             tick={axisTick(t.muted)}
-            width={58}
+            width={axisWidth()}
           />
           <Tooltip
             cursor={{ stroke: t.axis, strokeWidth: 1 }}
@@ -254,7 +254,7 @@ export function PaceChart({ pace }: { pace: Pace }) {
             tick={axisTick(t.muted)}
             ticks={[1, 8, 15, 22, days]}
           />
-          <YAxis tickFormatter={moneyAxis} tickLine={false} axisLine={false} tick={axisTick(t.muted)} width={58} />
+          <YAxis tickFormatter={moneyAxis} tickLine={false} axisLine={false} tick={axisTick(t.muted)} width={axisWidth()} />
           <Tooltip
             cursor={{ stroke: t.axis, strokeWidth: 1 }}
             content={({ active, payload }) => {

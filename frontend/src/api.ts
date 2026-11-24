@@ -13,6 +13,8 @@ export interface Transaction {
   kind: Kind;
   recurring_id: number | null; // set when a recurring rule created it
   account_id: number | null; // the cash account it came out of / went into
+  currency: string; // what it was paid in (its account's currency); amount_cents is always USD
+  paid_cents: number; // the amount in that currency
 }
 
 export type Frequency = "weekly" | "biweekly" | "monthly" | "yearly";
@@ -28,6 +30,7 @@ export interface RecurringRule {
   next_due: string;
   active: boolean;
   account_id: number | null;
+  currency: string; // amount_cents is in this currency
 }
 
 export interface Settings {
@@ -37,6 +40,9 @@ export interface Settings {
   ai_model: string;
   covered_categories: string[]; // expenses someone else pays for (e.g. a family member pays rent)
   covered_note: string;
+  display_currency: string; // amounts are shown in this (USD by default)
+  travel_account_id: number | null; // travel mode: new transactions default to this account
+  currencies: { code: string; symbol: string; decimals: number }[];
 }
 
 export interface AiStatus {
@@ -188,13 +194,30 @@ export interface Holding {
   bought_on: string | null; // investments: first bought
   cost_basis_cents: number | null; // investments: total paid for the quantity held
   balance_as_of: string | null; // cash: the day the balance was checked
+  currency: string; // cash: the balance's currency
 }
 
 export interface NetWorthLine extends Holding {
   value_cents: number | null;
   unit_price: number | null;
   note: string;
-  balance_change_cents: number; // cash: moved by linked transactions since balance_as_of
+  balance_cents: number | null; // cash: the balance now, in the account's currency (value_cents is USD)
+  balance_change_cents: number; // cash: moved by linked transactions and transfers since balance_as_of
+}
+
+/** Money moved between two of your own accounts (not spending or income). */
+export interface TransferItem {
+  id: number;
+  occurred_on: string;
+  from_account_id: number;
+  from_name: string;
+  from_currency: string;
+  from_cents: number;
+  to_account_id: number;
+  to_name: string;
+  to_currency: string;
+  to_cents: number;
+  note: string;
 }
 
 export interface NetWorth {
@@ -237,6 +260,7 @@ export interface NewHolding {
   value?: string;
   bought_on?: string;
   avg_price?: string; // price paid per share / unit
+  currency?: string; // cash accounts
 }
 
 export type Period = "1W" | "1M" | "3M" | "YTD" | "1Y" | "ALL";
@@ -344,7 +368,10 @@ export const api = {
   renameProfile: (name: string) => request<{ name: string }>("/api/profile", json("PUT", { name })),
 
   settings: () => request<Settings>("/api/settings"),
-  saveSettings: (body: Partial<Pick<Settings, "theme" | "ai_url" | "ai_model" | "covered_categories" | "covered_note">>) =>
+  saveSettings: (
+    body: Partial<Pick<Settings,
+      "theme" | "ai_url" | "ai_model" | "covered_categories" | "covered_note" | "display_currency" | "travel_account_id">>,
+  ) =>
     request<Settings>("/api/settings", json("PUT", body)),
 
   importPreview: (csv: string, mapping?: ImportMapping, options?: ImportOptions) =>
@@ -409,6 +436,12 @@ export const api = {
   netWorth: () => request<NetWorth>("/api/net-worth"),
   portfolio: (period: Period) => request<Portfolio>(`/api/portfolio${query({ period })}`),
   holdingsReview: () => request<HoldingsReview>("/api/ai/holdings", { method: "POST" }),
+  fx: (currency: string) => request<{ currency: string; rate: number }>(`/api/fx${query({ currency })}`),
+  transfers: () => request<TransferItem[]>("/api/transfers"),
+  addTransfer: (body: {
+    from_account_id: number; to_account_id: number; amount: string; received?: string; occurred_on: string; note?: string;
+  }) => request<TransferItem>("/api/transfers", json("POST", body)),
+  deleteTransfer: (id: number) => request<void>(`/api/transfers/${id}`, { method: "DELETE" }),
   netWorthHistory: () => request<Snapshot[]>("/api/net-worth/history"),
 };
 

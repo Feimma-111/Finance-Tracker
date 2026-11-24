@@ -51,7 +51,7 @@ export function AccountField({
       <span>{kind === "income" ? "Paid into" : "Paid from"}</span>
       <select value={value === null ? "" : String(value)} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}>
         {accounts.map((a) => (
-          <option key={a.id} value={a.id}>{a.name}</option>
+          <option key={a.id} value={a.id}>{a.name}{a.currency !== "USD" ? ` (${a.currency})` : ""}</option>
         ))}
         <option value="">Not from my accounts</option>
       </select>

@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api, BACKUP_DOWNLOAD_URL, CSV_EXPORT_URL, LOCKED_EVENT, type AiStatus, type Settings as SettingsData } from "../api";
+import { useCashAccounts } from "../components/AccountField";
 import { CsvImport } from "../components/CsvImport";
 import { useAsync, type ThemeChoice } from "../hooks";
 
@@ -279,6 +280,56 @@ const THEMES: { value: ThemeChoice; label: string }[] = [
   { value: "dark", label: "Dark" },
 ];
 
+/** Display currency (everything is converted at today's rate) and travel mode. */
+function MoneySettings({ settings, onSaved }: { settings: SettingsData; onSaved: (s: SettingsData) => void }) {
+  const accounts = useCashAccounts();
+  const [error, setError] = useState<string | null>(null);
+  async function save(body: Parameters<typeof api.saveSettings>[0]) {
+    setError(null);
+    try {
+      onSaved(await api.saveSettings(body));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  return (
+    <section className="setting-row">
+      <h3>Money & travel</h3>
+      <label className="field" style={{ maxWidth: 380 }}>
+        <span>Show amounts in</span>
+        <select value={settings.display_currency} onChange={(e) => save({ display_currency: e.target.value })}>
+          {settings.currencies.map((c) => (
+            <option key={c.code} value={c.code}>{c.code} ({c.symbol})</option>
+          ))}
+        </select>
+      </label>
+      <span className="hint">
+        Totals and charts are converted at today's rate. Each transaction still shows what you actually paid, in the
+        currency you paid it in.
+      </span>
+      <label className="field" style={{ maxWidth: 380 }}>
+        <span>Travel mode</span>
+        <select
+          value={settings.travel_account_id ?? ""}
+          onChange={(e) => save({ travel_account_id: e.target.value ? Number(e.target.value) : null })}
+          disabled={!accounts.length}
+        >
+          <option value="">Off</option>
+          {accounts.map((a) => (
+            <option key={a.id} value={a.id}>On: new transactions go to {a.name} ({a.currency})</option>
+          ))}
+        </select>
+      </label>
+      <span className="hint">
+        {accounts.length
+          ? "While traveling, new transactions start out in this account (you can still pick another, like a US card). Trips count toward your normal spending."
+          : "Add a cash account on the Holdings page to use travel mode."}
+      </span>
+      {error && <span className="message error">{error}</span>}
+    </section>
+  );
+}
+
 export function Settings({
   name,
   settings,
@@ -344,6 +395,7 @@ export function Settings({
 
         {settings && <AiSettings settings={settings} onSaved={onSettings} />}
         {settings && <CoveredSettings settings={settings} onSaved={onSettings} />}
+        {settings && <MoneySettings settings={settings} onSaved={onSettings} />}
 
         <CsvImport onImported={onDataChanged} />
 

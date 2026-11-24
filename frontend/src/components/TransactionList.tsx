@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type KeyboardEvent } from "react";
 import { api, type Frequency, type Kind, type Transaction } from "../api";
-import { dateLabel, FREQUENCIES, frequencyText, money, todayIso } from "../format";
+import { currencySymbol, dateLabel, displayCurrency, FREQUENCIES, frequencyText, money, moneyIn, todayIso } from "../format";
 import { useAsync } from "../hooks";
 import { CategoryIcon } from "../icons";
 import { AccountField, useCashAccounts } from "./AccountField";
@@ -59,7 +59,7 @@ export function TransactionList({
                 key={tx.id}
                 tabIndex={0}
                 role="button"
-                aria-label={`Edit ${tx.description}, ${money(tx.amount_cents)}`}
+                aria-label={`Edit ${tx.description}, ${moneyIn(tx.paid_cents, tx.currency)}`}
                 onClick={() => setEditing(tx)}
                 onKeyDown={(e) => onKey(e, tx)}
               >
@@ -74,7 +74,8 @@ export function TransactionList({
                   <span className="tx-sub">{tx.category}</span>
                 </div>
                 <span className={`tx-amount num ${tx.kind === "income" ? "amount-income" : ""}`}>
-                  {tx.kind === "income" ? "+" : "−"}{money(tx.amount_cents)}
+                  {tx.kind === "income" ? "+" : "−"}{moneyIn(tx.paid_cents, tx.currency)}
+                  {tx.currency !== displayCurrency() && <span className="tx-converted">{money(tx.amount_cents)}</span>}
                 </span>
                 <span className="row-chevron" aria-hidden="true">›</span>
               </li>
@@ -114,11 +115,13 @@ function dayHeading(iso: string): string {
 export function EditTransactionSheet({ tx, onClose, onSaved }: { tx: Transaction; onClose: () => void; onSaved: () => void }) {
   const [kind, setKind] = useState<Kind>(tx.kind);
   const [description, setDescription] = useState(tx.description);
-  const [amount, setAmount] = useState((tx.amount_cents / 100).toFixed(2));
+  // Edited in the currency it was paid in (NT$ for an NT$ account).
+  const [amount, setAmount] = useState((tx.paid_cents / 100).toFixed(2));
   const [category, setCategory] = useState(tx.category);
   const [date, setDate] = useState(tx.occurred_on);
   const [account, setAccount] = useState<number | null>(tx.account_id);
   const accounts = useCashAccounts();
+  const currency = accounts.find((a) => a.id === account)?.currency ?? (account === null ? "USD" : tx.currency);
   const [applyToMatching, setApplyToMatching] = useState(true);
   const [repeat, setRepeat] = useState<Frequency | "">("");
   const [fillMissing, setFillMissing] = useState(false);
@@ -164,7 +167,7 @@ export function EditTransactionSheet({ tx, onClose, onSaved }: { tx: Transaction
       <div className="sheet-hero">
         <CategoryIcon category={category || tx.category} hint={description} size={52} />
         <strong className={kind === "income" ? "amount-income" : ""}>
-          {kind === "income" ? "+" : "−"}${amount || "0.00"}
+          {kind === "income" ? "+" : "−"}{currencySymbol(currency)}{amount || "0.00"}
         </strong>
       </div>
       <form className="form" onSubmit={save}>
@@ -183,7 +186,7 @@ export function EditTransactionSheet({ tx, onClose, onSaved }: { tx: Transaction
           <label className="field">
             <span>Amount</span>
             <div className="money-input">
-              <i>$</i>
+              <i>{currencySymbol(currency)}</i>
               <input type="text" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} required />
             </div>
           </label>
