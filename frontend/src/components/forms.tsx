@@ -3,6 +3,7 @@ import { api, type AssetType, type Frequency, type Kind, type Quote } from "../a
 import { ASSET_TYPES, currencySymbol, dateLabel, FREQUENCIES, frequencyText, moneyIn, todayIso } from "../format";
 import { useAsync } from "../hooks";
 import { AccountField, lastAccount, rememberAccount, useCashAccounts } from "./AccountField";
+import { DateInput } from "./DateInput";
 
 const CURRENCY_CHOICES: [string, string][] = [
   ["USD", "US dollar ($)"], ["TWD", "New Taiwan dollar (NT$)"], ["CNY", "Chinese yuan (CN¥)"],
@@ -118,12 +119,7 @@ function EntryForm({ kind, onSaved, version }: { kind: Kind; onSaved: () => void
         </label>
         <label className="field">
           <span>{repeat ? "First date" : "Date"}</span>
-          <input
-            type="date"
-            value={date}
-            max={repeat ? oneYearFromToday() : todayIso()}
-            onChange={(e) => setDate(e.target.value)}
-          />
+          <DateInput value={date} max={repeat ? oneYearFromToday() : todayIso()} onChange={setDate} />
         </label>
       </div>
       <label className="field">
@@ -267,14 +263,14 @@ function TransferForm({ onSaved, version }: { onSaved: () => void; version: numb
         ) : (
           <label className="field">
             <span>Date</span>
-            <input type="date" value={date} max={todayIso()} onChange={(e) => setDate(e.target.value)} />
+            <DateInput value={date} onChange={setDate} />
           </label>
         )}
       </div>
       {converting && (
         <label className="field">
           <span>Date</span>
-          <input type="date" value={date} max={todayIso()} onChange={(e) => setDate(e.target.value)} />
+          <DateInput value={date} onChange={setDate} />
         </label>
       )}
       <label className="field">
@@ -431,7 +427,7 @@ export function HoldingForm({ onSaved }: { onSaved: () => void }) {
         <div className="field-row">
           <label className="field">
             <span>Bought on (optional)</span>
-            <input type="date" value={boughtOn} max={todayIso()} onChange={(e) => setBoughtOn(e.target.value)} />
+            <DateInput value={boughtOn} onChange={setBoughtOn} />
           </label>
           <label className="field">
             <span>Price paid {type === "gold" ? "per oz" : type === "crypto" ? "per coin" : "per share"} (optional)</span>

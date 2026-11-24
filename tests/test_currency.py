@@ -169,3 +169,51 @@ class CurrencyApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(TestClient is None, "install requirements.txt to test the web API")
+class ActivityTests(unittest.TestCase):
+    """The dropdown under each holding: what moved an account, newest first."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        app = create_app(os.path.join(self.folder.name, "finance.db"), provider=FakeProvider({"TWD=X": 32.0}),
+                         today=lambda: TODAY, static_dir=None)
+        self.client = TestClient(app)
+        sign_in(self.client)
+
+    def tearDown(self):
+        self.client.close()
+        self.folder.cleanup()
+
+    def test_account_activity(self):
+        c = self.client
+        bank = c.post("/api/holdings", json={"asset_type": "cash", "name": "Bank", "value": "500"}).json()
+        savings = c.post("/api/holdings", json={"asset_type": "cash", "name": "Savings", "value": "0"}).json()
+        tx = lambda desc, amount, day, **kw: c.post("/api/transactions", json={  # noqa: E731
+            "description": desc, "amount": amount, "category": "Food", "occurred_on": day,
+            "account_id": bank["id"], **kw}).json()
+        tx("Old dinner", "30", "2026-11-10")                          # already in the $500
+        tx("Lunch", "12", TODAY.isoformat())                          # after the balance was entered
+        tx("Paycheck", "200", TODAY.isoformat(), kind="income", category="Salary")
+        c.post("/api/transfers", json={"from_account_id": bank["id"], "to_account_id": savings["id"],
+                                       "amount": "50", "note": "monthly"})
+        activity = c.get(f"/api/holdings/{bank['id']}/activity").json()
+        self.assertEqual(activity["balance"], {"date": TODAY.isoformat(), "amount_cents": 50000})
+        self.assertEqual(
+            [(i["type"], i["description"], i["amount_cents"], i["counted"]) for i in activity["items"]],
+            [("income", "Paycheck", 20000, True),
+             ("expense", "Lunch", -1200, True),
+             ("transfer", "To Savings", -5000, True),
+             ("expense", "Old dinner", -3000, False)],  # older, and already in the balance
+        )
+        other = c.get(f"/api/holdings/{savings['id']}/activity").json()
+        self.assertEqual([(i["description"], i["amount_cents"], i["category"]) for i in other["items"]],
+                         [("From Bank", 5000, "monthly")])
+
+        stock = c.post("/api/holdings", json={"asset_type": "stock", "symbol": "AAPL", "quantity": 2,
+                                              "bought_on": "2026-01-02", "avg_price": "150"}).json()
+        bought = c.get(f"/api/holdings/{stock['id']}/activity").json()["items"]
+        self.assertEqual([(i["type"], i["date"], i["quantity"], i["amount_cents"]) for i in bought],
+                         [("bought", "2026-01-02", 2, 30000)])
+        self.assertEqual(c.get("/api/holdings/999/activity").status_code, 404)

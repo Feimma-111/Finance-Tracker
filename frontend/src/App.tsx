@@ -171,8 +171,13 @@ function MainApp() {
             </a>
           ))}
         </nav>
-        <button className="btn btn-primary add-button" type="button" onClick={() => setAdding(true)}>
-          {TabIcons.plus}
+        <button className="btn add-button" type="button" onClick={() => setAdding(true)}>
+          <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3v9" stroke="#ea4335" strokeWidth="3" strokeLinecap="round" />
+            <path d="M12 12h9" stroke="#4285f4" strokeWidth="3" strokeLinecap="round" />
+            <path d="M12 12v9" stroke="#34a853" strokeWidth="3" strokeLinecap="round" />
+            <path d="M3 12h9" stroke="#fbbc04" strokeWidth="3" strokeLinecap="round" />
+          </svg>
           <span>Add</span>
         </button>
       </header>

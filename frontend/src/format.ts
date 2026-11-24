@@ -84,6 +84,9 @@ export const dateLabel = (iso: string) =>
   localDate(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 export const dateShort = (iso: string) =>
   localDate(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+/** "Nov 23" this year, "Nov 23, 2025" otherwise. */
+export const dateCompact = (iso: string) =>
+  iso.slice(0, 4) === String(new Date().getFullYear()) ? dateShort(iso) : dateLabel(iso);
 export const monthLabel = (month: string) =>
   localDate(`${month}-01`).toLocaleDateString("en-US", { month: "long", year: "numeric" });
 export const monthShort = (month: string) =>

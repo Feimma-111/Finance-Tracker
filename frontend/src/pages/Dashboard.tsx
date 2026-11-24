@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { api, type CategoryReport, type Pace } from "../api";
 import { AiReview } from "../components/AiReview";
 import {
@@ -16,6 +16,7 @@ import { TransactionList } from "../components/TransactionList";
 import { Upcoming } from "../components/Upcoming";
 import { currentMonth, dateLabel, money, monthLabel, percent, signedMoney } from "../format";
 import { useAsync } from "../hooks";
+import { categoryColor } from "../icons";
 
 /**
  * Home screen, laid out like Rocket Money: this month's spending and how it's
@@ -197,7 +198,8 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
                 All
               </label>
               {allCategories.map((name) => (
-                <label key={name} className={`toggle ${chosen.includes(name) ? "on" : ""}`}>
+                <label key={name} className={`toggle ${chosen.includes(name) ? "on" : ""}`}
+                  style={{ "--chip": categoryColor(name) } as CSSProperties}>
                   <input type="checkbox" checked={chosen.includes(name)} onChange={() => toggleCategory(name)} />
                   {name}
                 </label>

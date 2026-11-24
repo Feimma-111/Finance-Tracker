@@ -1,10 +1,11 @@
-import { useState, type FormEvent, type KeyboardEvent } from "react";
+import { Fragment, useState, type FormEvent, type KeyboardEvent } from "react";
 import { api, type Frequency, type Kind, type Transaction } from "../api";
-import { currencySymbol, dateLabel, displayCurrency, FREQUENCIES, frequencyText, money, moneyIn, todayIso } from "../format";
+import { currencySymbol, dateLabel, displayCurrency, FREQUENCIES, frequencyText, money, moneyIn, monthLabel, todayIso } from "../format";
 import { useAsync } from "../hooks";
 import { CategoryIcon } from "../icons";
 import { AccountField, useCashAccounts } from "./AccountField";
 import { Sheet } from "./Sheet";
+import { DateInput } from "./DateInput";
 
 /**
  * Transactions grouped under day headings ("Today", "Yesterday", "Tue, Nov 18"),
@@ -45,8 +46,13 @@ export function TransactionList({
 
   return (
     <div className="tx-list">
-      {groups.map((group) => (
-        <section key={group.day} className="tx-day">
+      {groups.map((group, index) => (
+        <Fragment key={group.day}>
+          {(index === 0 || group.day.slice(0, 7) !== groups[index - 1].day.slice(0, 7)) && (
+            <h3 className="tx-month">{monthLabel(group.day.slice(0, 7))}</h3>
+          )}
+        <section className="tx-day">
+          <DayBadge day={group.day} />
           <h3 className="tx-day-head">
             <span>{dayHeading(group.day)}</span>
             {group.items.length > 1 && (
@@ -82,6 +88,7 @@ export function TransactionList({
             ))}
           </ul>
         </section>
+        </Fragment>
       ))}
       {editing && (
         <EditTransactionSheet
@@ -106,10 +113,22 @@ function dayHeading(iso: string): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   if (iso === today) return "Today";
   if (iso === `${yesterday.getFullYear()}-${pad(yesterday.getMonth() + 1)}-${pad(yesterday.getDate())}`) return "Yesterday";
-  const sameYear = y === new Date().getFullYear();
-  return date.toLocaleDateString("en-US", {
-    weekday: "short", month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }),
-  });
+  // Other days: the date badge beside it already says which day.
+  void date;
+  return "";
+}
+
+/** Google Calendar's date badge: weekday over the day number, filled in for today. */
+function DayBadge({ day }: { day: string }) {
+  const [y, m, d] = day.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  const today = day === todayIso();
+  return (
+    <div className={`day-badge ${today ? "today" : ""}`} aria-hidden="true">
+      <span className="dow">{date.toLocaleDateString("en-US", { weekday: "short" })}</span>
+      <span className="dom">{d}</span>
+    </div>
+  );
 }
 
 export function EditTransactionSheet({ tx, onClose, onSaved }: { tx: Transaction; onClose: () => void; onSaved: () => void }) {
@@ -192,7 +211,7 @@ export function EditTransactionSheet({ tx, onClose, onSaved }: { tx: Transaction
           </label>
           <label className="field">
             <span>Date</span>
-            <input type="date" value={date} max={todayIso()} onChange={(e) => setDate(e.target.value)} required />
+            <DateInput value={date} onChange={setDate} required />
           </label>
         </div>
         <label className="field">

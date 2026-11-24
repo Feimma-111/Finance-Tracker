@@ -16,26 +16,26 @@
    stays readable. */
 :root {
   color-scheme: light;
-  --page: #f2f2f7;               /* systemGroupedBackground */
+  --page: #f8fafd;               /* Calendar's blue-white page */
   --surface-1: #ffffff;          /* cards */
-  --surface-2: #f2f2f7;          /* recessed areas inside cards */
-  --fill: rgba(118, 118, 128, 0.12);   /* fields, segmented controls */
-  --fill-strong: rgba(118, 118, 128, 0.2);
-  --bubble: #e9e9eb;             /* incoming chat bubble */
-  --segment-on: #ffffff;
-  --bar: rgba(242, 242, 247, 0.78);    /* frosted top bar */
-  --text-primary: #000000;
-  --text-secondary: #3c3c43;
-  --text-muted: #6e6e73;
-  --grid: #e5e5ea;               /* separators, gridlines */
-  --axis: #c7c7cc;
-  --border: transparent;
-  --hover: rgba(0, 0, 0, 0.04);
-  --focus: #007aff;
-  --focus-ring: rgba(0, 122, 255, 0.28);
+  --surface-2: #f0f4f9;          /* recessed areas inside cards */
+  --fill: #eef2f8;   /* fields, segmented controls */
+  --fill-strong: #e1e7f0;
+  --bubble: #eef2f8;             /* incoming chat bubble */
+  --segment-on: #c2e7ff;
+  --bar: rgba(248, 250, 253, 0.94);    /* frosted top bar */
+  --text-primary: #1f1f1f;
+  --text-secondary: #444746;
+  --text-muted: #5f6368;
+  --grid: #e3e5e8;               /* separators, gridlines */
+  --axis: #c4c7c5;
+  --border: #dadce0;
+  --hover: rgba(68, 71, 70, 0.08);
+  --focus: #0b57d0;
+  --focus-ring: rgba(11, 87, 208, 0.3);
 
-  --series-1: #007aff;
-  --series-1-muted: #7ab3ff;
+  --series-1: #1a73e8;
+  --series-1-muted: #a8c7fa;
   --series-2: #eb6834;
   --series-3: #1baf7a;
   --series-4: #eda100;
@@ -44,45 +44,62 @@
   --other: #8e8e93;              /* donut: categories outside the top five */
   --covered: #d1d1d6;            /* donut: costs someone else covers */
 
-  --positive: #248a3d;           /* accessible systemGreen */
-  --negative: #d70015;           /* accessible systemRed */
-  --danger: #d70015;
-  --accent: #007aff;
-  --accent-tint: rgba(0, 122, 255, 0.12);
+  --positive: #188038;           /* accessible systemGreen */
+  --negative: #d93025;           /* accessible systemRed */
+  --danger: #d93025;
+  --accent: #0b57d0;
+  --accent-tint: #d3e3fd;
   --accent-ink: #ffffff;
 
-  --radius: 14px;
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 6px rgba(0, 0, 0, 0.03);
+  --radius: 20px;
+  --shadow: none;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
   font-size: 15px;
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
   color: var(--text-primary);
   background: var(--page);
+
+  /* Google Calendar look: selected states, the raised Add button, and the
+     eleven Calendar event colors used for categories. */
+  --selected: #c2e7ff;
+  --on-selected: #001d35;
+  --fab-shadow: 0 1px 3px rgba(60, 64, 67, 0.3), 0 4px 8px 3px rgba(60, 64, 67, 0.15);
+  --tint-red: #d50000;        /* Tomato */
+  --tint-pink: #e67c73;       /* Flamingo */
+  --tint-orange: #f4511e;     /* Tangerine */
+  --tint-yellow: #f6bf26;     /* Banana */
+  --tint-green: #33b679;      /* Sage */
+  --tint-teal: #0b8043;       /* Basil */
+  --tint-blue: #039be5;       /* Peacock */
+  --tint-indigo: #3f51b5;     /* Blueberry */
+  --tint-lavender: #7986cb;   /* Lavender */
+  --tint-purple: #8e24aa;     /* Grape */
+  --tint-gray: #616161;       /* Graphite */
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --page: #000000;
-    --surface-1: #1c1c1e;
-    --surface-2: #2c2c2e;
-    --fill: rgba(118, 118, 128, 0.24);
-    --fill-strong: rgba(118, 118, 128, 0.36);
-    --bubble: #2c2c2e;
-    --segment-on: #636366;
-    --bar: rgba(22, 22, 24, 0.78);
-    --text-primary: #ffffff;
-    --text-secondary: #d1d1d6;
-    --text-muted: #98989d;
-    --grid: #38383a;
-    --axis: #48484a;
-    --hover: rgba(255, 255, 255, 0.06);
-    --focus: #0a84ff;
-    --focus-ring: rgba(10, 132, 255, 0.4);
+    --page: #131314;
+    --surface-1: #1e1f20;
+    --surface-2: #282a2c;
+    --fill: #282a2c;
+    --fill-strong: #333537;
+    --bubble: #282a2c;
+    --segment-on: #004a77;
+    --bar: rgba(19, 19, 20, 0.94);
+    --text-primary: #e3e3e3;
+    --text-secondary: #c4c7c5;
+    --text-muted: #9aa0a6;
+    --grid: #3c4043;
+    --axis: #5f6368;
+    --hover: rgba(227, 227, 227, 0.08);
+    --focus: #a8c7fa;
+    --focus-ring: rgba(168, 199, 250, 0.35);
 
-    --series-1: #0a84ff;
-    --series-1-muted: #1a5296;
+    --series-1: #4c8df6;
+    --series-1-muted: #24477f;
     --series-2: #d95926;
     --series-3: #199e70;
     --series-4: #c98500;
@@ -91,36 +108,41 @@
     --other: #8e8e93;
     --covered: #48484a;
 
-    --positive: #30d158;
-    --negative: #ff453a;
-    --danger: #ff453a;
-    --accent: #0a84ff;
-    --accent-tint: rgba(10, 132, 255, 0.2);
+    --positive: #81c995;
+    --negative: #f28b82;
+    --danger: #f28b82;
+    --accent: #a8c7fa;
+    --accent-tint: rgba(168, 199, 250, 0.16);
     --shadow: none;
+
+    --border: #444746;
+    --selected: #004a77;
+    --on-selected: #c2e7ff;
+    --fab-shadow: 0 1px 3px rgba(0, 0, 0, 0.5), 0 4px 8px 3px rgba(0, 0, 0, 0.3);
   }
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --page: #000000;
-  --surface-1: #1c1c1e;
-  --surface-2: #2c2c2e;
-  --fill: rgba(118, 118, 128, 0.24);
-  --fill-strong: rgba(118, 118, 128, 0.36);
-  --bubble: #2c2c2e;
-  --segment-on: #636366;
-  --bar: rgba(22, 22, 24, 0.78);
-  --text-primary: #ffffff;
-  --text-secondary: #d1d1d6;
-  --text-muted: #98989d;
-  --grid: #38383a;
-  --axis: #48484a;
-  --hover: rgba(255, 255, 255, 0.06);
-  --focus: #0a84ff;
-  --focus-ring: rgba(10, 132, 255, 0.4);
+  --page: #131314;
+  --surface-1: #1e1f20;
+  --surface-2: #282a2c;
+  --fill: #282a2c;
+  --fill-strong: #333537;
+  --bubble: #282a2c;
+  --segment-on: #004a77;
+  --bar: rgba(19, 19, 20, 0.94);
+  --text-primary: #e3e3e3;
+  --text-secondary: #c4c7c5;
+  --text-muted: #9aa0a6;
+  --grid: #3c4043;
+  --axis: #5f6368;
+  --hover: rgba(227, 227, 227, 0.08);
+  --focus: #a8c7fa;
+  --focus-ring: rgba(168, 199, 250, 0.35);
 
-  --series-1: #0a84ff;
-  --series-1-muted: #1a5296;
+  --series-1: #4c8df6;
+  --series-1-muted: #24477f;
   --series-2: #d95926;
   --series-3: #199e70;
   --series-4: #c98500;
@@ -129,12 +151,17 @@
   --other: #8e8e93;
   --covered: #48484a;
 
-  --positive: #30d158;
-  --negative: #ff453a;
-  --danger: #ff453a;
-  --accent: #0a84ff;
-  --accent-tint: rgba(10, 132, 255, 0.2);
+  --positive: #81c995;
+  --negative: #f28b82;
+  --danger: #f28b82;
+  --accent: #a8c7fa;
+  --accent-tint: rgba(168, 199, 250, 0.16);
   --shadow: none;
+
+  --border: #444746;
+  --selected: #004a77;
+  --on-selected: #c2e7ff;
+  --fab-shadow: 0 1px 3px rgba(0, 0, 0, 0.5), 0 4px 8px 3px rgba(0, 0, 0, 0.3);
 }
 
 * { box-sizing: border-box; }
@@ -711,3 +738,146 @@ img.brand-mark { display: block; width: 28px; height: 28px; border-radius: 7px; 
   padding: 10px 0; border-bottom: 0.5px solid var(--grid);
 }
 .transfer-list li:last-child { border-bottom: none; }
+
+/* ==================================================================== Google Calendar look
+   Material-style: a soft blue-white page; white panels with thin outlines
+   instead of shadows; tinted "selected" states; a raised, Create-style Add
+   button; regular-weight titles; and color -- every category has one of
+   Calendar's event colors, on its icon and its checkbox. Rules here override
+   the base styles above. */
+:root {
+  font-family: "Google Sans Text", "Google Sans", Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+/* Surfaces and type */
+.card { border: 1px solid var(--border); box-shadow: none; }
+.topbar { border-bottom: none; -webkit-backdrop-filter: none; backdrop-filter: none; padding-top: 10px; padding-bottom: 10px; }
+.brand { font-weight: 400; font-size: 22px; color: var(--text-secondary); }
+.brand-mark { border-radius: 50%; }
+.page-title { font-weight: 400; font-size: 30px; letter-spacing: 0; }
+.card-title { font-weight: 500; font-size: 16px; letter-spacing: 0; }
+.hero { font-weight: 500; }
+.eyebrow { font-weight: 500; letter-spacing: 0.01em; }
+.ai-heading { color: var(--accent); }
+
+/* Navigation: tabs with a tinted indicator */
+.nav { background: transparent; padding: 0; gap: 4px; }
+.nav a { padding: 8px 16px; border-radius: 12px; color: var(--text-secondary); font-weight: 500; }
+.nav a:hover { background: var(--hover); }
+.nav a.active { background: var(--selected); color: var(--on-selected); box-shadow: none; }
+
+/* Add: raised like Calendar's Create button */
+.add-button {
+  background: var(--surface-1); color: var(--text-primary); box-shadow: var(--fab-shadow);
+  border-radius: 16px; min-height: 48px; padding: 8px 20px 8px 14px; gap: 10px; font-weight: 500;
+}
+.add-button:hover { background: var(--surface-2); }
+
+/* Buttons: filled for the main action, outlined for the rest */
+.btn { background: transparent; box-shadow: inset 0 0 0 1px var(--axis); color: var(--accent); font-weight: 500; }
+.btn:hover { background: var(--hover); }
+.btn-primary { background: var(--accent); color: var(--accent-ink); box-shadow: none; }
+.btn-primary:hover { background: var(--accent); filter: brightness(1.08); }
+.btn-danger { color: var(--danger); }
+.add-button.btn { box-shadow: var(--fab-shadow); }
+
+/* Segmented controls: outlined segments, the chosen one tinted */
+.segmented { background: transparent; padding: 0; gap: 0; border-radius: 12px; box-shadow: inset 0 0 0 1px var(--axis); overflow: hidden; }
+.segmented button { border-radius: 0; padding: 7px 14px; color: var(--text-secondary); }
+.segmented button + button { box-shadow: inset 1px 0 0 var(--axis); }
+.segmented button[aria-pressed="true"] { background: var(--selected); color: var(--on-selected); box-shadow: none; }
+.segmented button + button[aria-pressed="true"] { box-shadow: inset 1px 0 0 var(--axis); }
+
+/* Chips and toggles: outlined; a ticked toggle's box takes its category's color,
+   like Calendar's "My calendars" checkboxes */
+.chip { background: transparent; box-shadow: inset 0 0 0 1px var(--axis); color: var(--text-secondary); }
+.chip:hover { background: var(--hover); }
+.toggle { background: transparent; box-shadow: inset 0 0 0 1px var(--axis); color: var(--text-secondary); }
+.toggle::before { border-radius: 3px; box-shadow: inset 0 0 0 2px var(--text-muted); }
+.toggle.on {
+  color: var(--text-primary); font-weight: 500;
+  background: color-mix(in srgb, var(--chip, var(--accent)) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--chip, var(--accent)) 50%, transparent);
+}
+.toggle.on::before, .toggle.mixed::before { background: var(--chip, var(--accent)); box-shadow: none; }
+
+/* Category and asset icons: round badges in Calendar's event colors */
+.icon-tile { border-radius: 50%; color: #fff; font-weight: 500; }
+.tint-red { background: var(--tint-red); }
+.tint-pink { background: var(--tint-pink); }
+.tint-orange { background: var(--tint-orange); }
+.tint-yellow { background: var(--tint-yellow); color: #202124; }
+.tint-green { background: var(--tint-green); }
+.tint-teal { background: var(--tint-teal); }
+.tint-blue { background: var(--tint-blue); }
+.tint-indigo { background: var(--tint-indigo); }
+.tint-lavender { background: var(--tint-lavender); }
+.tint-purple { background: var(--tint-purple); }
+.tint-gray { background: var(--tint-gray); }
+
+/* Transactions, like Calendar's schedule view: a date badge beside each day */
+.tx-day { display: grid; grid-template-columns: 48px minmax(0, 1fr); column-gap: 10px; }
+.day-badge { grid-row: 1 / span 2; display: grid; justify-items: center; align-content: start; gap: 2px; padding-top: 2px; }
+.day-badge .dow { font-size: 11px; font-weight: 500; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.04em; }
+.day-badge .dom {
+  width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 22px; color: var(--text-secondary);
+}
+.day-badge.today .dow { color: var(--accent); }
+.day-badge.today .dom { background: var(--accent); color: var(--accent-ink); }
+.tx-day-head, .tx-day ul { grid-column: 2; }
+.tx-day-head { padding-top: 6px; }
+.tx-day li:hover { background: var(--surface-2); }
+
+/* Holdings: type groups and the activity dropdown */
+.holdings-table .group-row th {
+  padding-top: 18px; text-transform: none; letter-spacing: 0; font-size: 14px; font-weight: 500;
+  color: var(--text-primary); border-bottom: 1px solid var(--border);
+}
+.holdings-table .group-row .swatch { margin-right: 8px; vertical-align: -1px; }
+.holdings-table tbody tr.open > td { background: var(--surface-2); }
+.row-chevron.disclosure { display: inline-block; transition: transform 0.15s; }
+.row-chevron.disclosure.open { transform: rotate(90deg); }
+.activity-row > td { background: var(--surface-2); padding: 4px 12px 14px 54px; }
+.activity { display: grid; gap: 8px; }
+.activity-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.activity-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.activity-item {
+  display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; gap: 12px; align-items: baseline;
+  padding: 7px 0; border-bottom: 1px solid var(--grid); font-size: 14px;
+}
+.activity-item:last-child { border-bottom: none; }
+.activity-item.settled { opacity: 0.5; }
+.activity-date { color: var(--text-muted); font-size: 13px; }
+.activity-tag {
+  margin-left: 8px; padding: 1px 8px; border-radius: 8px; font-size: 12px; font-weight: 500;
+  background: var(--accent-tint); color: var(--accent);
+}
+.balance-marker { color: var(--accent); font-weight: 500; }
+.balance-marker .activity-date { color: var(--accent); }
+
+/* Dialogs and the phone tab bar */
+.sheet { border-radius: 28px; }
+.tabbar a.active { color: var(--on-selected); }
+.tabbar a.active svg { background: var(--selected); border-radius: 16px; padding: 4px 18px; box-sizing: content-box; }
+@media (max-width: 560px) {
+  .sheet { border-radius: 28px 28px 0 0; }
+  .activity-row > td { padding-left: 12px; }
+  .activity-item { grid-template-columns: 52px minmax(0, 1fr) auto; gap: 8px; }
+  .add-button { min-height: 40px; padding: 6px 14px 6px 10px; }
+}
+
+/* Dropdowns: outlined with a chevron, like Calendar's view switcher. Native
+   macOS menus ignore the background color, so they're drawn by hand. */
+select {
+  -webkit-appearance: none; appearance: none;
+  background: var(--surface-1) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%2380868b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center;
+  box-shadow: inset 0 0 0 1px var(--axis);
+  padding-right: 34px;
+}
+select:hover { background-color: var(--surface-2); }
+select:focus { box-shadow: inset 0 0 0 2px var(--accent); }
+.month-select { font-weight: 500; }
+.topbar { background: var(--page); border-bottom: 1px solid var(--border); }
+.tx-month { margin: 6px 0 -4px; font-size: 14px; font-weight: 500; color: var(--text-secondary); }
+.tx-month:first-child { margin-top: 0; }

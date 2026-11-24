@@ -16,7 +16,7 @@ import json
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from .models import (
     HOME_CURRENCY,
@@ -1019,6 +1019,61 @@ class Store:
             (today.isoformat(),),
         )
         return {row["id"]: row["change"] for row in rows}
+
+    def account_activity(self, holding_id: int, limit: int = 60) -> List[Dict[str, Any]]:
+        """What moved a cash account, newest first: its linked transactions and
+        transfers, in the account's currency. ``counted`` says whether an item
+        is in the balance shown (it came after the balance was last entered)
+        rather than already part of the number you typed."""
+        h = self.conn.execute(
+            "SELECT balance_as_of, balance_mark, balance_set_at FROM holdings WHERE id = ?", (holding_id,)
+        ).fetchone()
+        if h is None:
+            return []
+        as_of, mark, set_at = h["balance_as_of"], h["balance_mark"] or 0, h["balance_set_at"] or ""
+
+        def counted(day: str, after: bool) -> bool:
+            return as_of is not None and (day > as_of or (day == as_of and after))
+
+        items: List[Dict[str, Any]] = []
+        for row in self.conn.execute(
+            """
+            SELECT t.id, t.description, t.kind, t.occurred_on, c.name AS category,
+                   COALESCE(t.original_cents, t.amount_cents) AS paid
+            FROM transactions t JOIN categories c ON c.id = t.category_id
+            WHERE t.account_id = ? ORDER BY t.occurred_on DESC, t.id DESC LIMIT ?
+            """,
+            (holding_id, limit),
+        ):
+            sign = 1 if row["kind"] == "income" else -1
+            items.append({
+                "type": row["kind"], "id": row["id"], "date": row["occurred_on"], "description": row["description"],
+                "category": row["category"], "amount_cents": sign * row["paid"],
+                "counted": counted(row["occurred_on"], row["id"] > mark),
+            })
+        for row in self.conn.execute(
+            """
+            SELECT tr.*, f.name AS from_name, o.name AS to_name
+            FROM transfers tr
+            LEFT JOIN holdings f ON f.id = tr.from_account_id
+            LEFT JOIN holdings o ON o.id = tr.to_account_id
+            WHERE tr.from_account_id = ? OR tr.to_account_id = ?
+            ORDER BY tr.occurred_on DESC, tr.id DESC LIMIT ?
+            """,
+            (holding_id, holding_id, limit),
+        ):
+            outgoing = row["from_account_id"] == holding_id
+            other = row["to_name"] if outgoing else row["from_name"]
+            items.append({
+                "type": "transfer", "id": row["id"], "date": row["occurred_on"],
+                "description": f"{'To' if outgoing else 'From'} {other or 'a removed account'}",
+                "category": row["note"] or None,
+                "amount_cents": -row["from_cents"] if outgoing else row["to_cents"],
+                "counted": counted(row["occurred_on"], row["created_at"] > set_at),
+            })
+        # Newest first; on the day the balance was entered, items in it go below the ones after it.
+        items.sort(key=lambda i: (i["date"], i["counted"], i["id"]), reverse=True)
+        return items[:limit]
 
     # -------------------------------------------------------------- transfers
 

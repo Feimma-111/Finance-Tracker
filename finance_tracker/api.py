@@ -40,6 +40,7 @@ GET    /api/reports/pace?month=      running total through a month vs the month 
 GET    /api/holdings                 your holdings
 POST   /api/holdings                 add one
 PATCH  /api/holdings/{id}            change name, symbol, quantity or value
+GET    /api/holdings/{id}/activity   an account's transactions and transfers / an investment's purchase
 DELETE /api/holdings/{id}            remove one
 GET    /api/quotes/{symbol}          live price for a ticker (used to check symbols)
 GET    /api/net-worth                value everything at live prices
@@ -1088,6 +1089,27 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
         return _holding_json(store.get_holding(holding_id))
+
+    @app.get("/api/holdings/{holding_id}/activity")
+    def holding_activity(holding_id: int, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """What happened to one holding, newest first. A cash account: its linked
+        transactions and transfers (in its own currency), with where its balance
+        was last entered. An investment: the purchase recorded for it."""
+        h = store.get_holding(holding_id)
+        if h is None:
+            raise HTTPException(404, f"no holding with id {holding_id}")
+        result: Dict[str, Any] = {"holding": _holding_json(h), "items": [], "balance": None}
+        if h.asset_type is AssetType.CASH:
+            result["items"] = store.account_activity(holding_id)
+            if h.balance_as_of:
+                result["balance"] = {"date": h.balance_as_of.isoformat(), "amount_cents": h.manual_value_cents}
+        elif h.asset_type.is_market_priced and (h.bought_on or h.cost_basis_cents is not None):
+            result["items"] = [{
+                "type": "bought", "id": h.id, "date": h.bought_on.isoformat() if h.bought_on else None,
+                "description": "Bought", "category": None, "quantity": h.quantity,
+                "amount_cents": h.cost_basis_cents, "counted": True,
+            }]
+        return result
 
     @app.delete("/api/holdings/{holding_id}", status_code=204)
     def remove_holding(holding_id: int, store: Store = Depends(get_store)) -> Response:

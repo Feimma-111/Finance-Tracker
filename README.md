@@ -267,6 +267,7 @@ Every endpoint except `/api/auth/...` requires a signed-in session.
 | GET | `/api/reports/purchases?category=&month=` | one category's spending, grouped by purchase |
 | GET / POST | `/api/holdings` | list / add |
 | PATCH / DELETE | `/api/holdings/{id}` | change name, symbol, quantity, value, purchase date, or price paid / remove |
+| GET | `/api/holdings/{id}/activity` | an account's transactions and transfers, or an investment's purchase |
 | GET | `/api/quotes/{symbol}` | live price (used to check tickers) |
 | GET | `/api/net-worth` | value everything (cash accounts with their linked transactions), liquid total; records today's snapshot |
 | GET | `/api/portfolio?period=` | investment gains since buying, over 1W–All, and today, plus the chart |
@@ -368,6 +369,13 @@ but:
    and choose a model.
 
 ### Your money: bank accounts and investments
+
+**Activity under each holding.** On the Holdings page, everything you own is
+grouped by type with a subtotal each. Click a holding to open a dropdown of
+what moved it, newest first. For a bank account, that's its linked
+transactions and transfers, with a marker where you last entered its balance;
+entries before the marker are grayed because they're already in that number.
+For an investment, it's the purchase you recorded.
 
 **Liquid (cash accounts).** Add each bank account as a *Cash* holding with the
 balance your bank shows today. When you add a transaction, choose which account
@@ -506,10 +514,13 @@ paused. Stopping a rule keeps the transactions it already created.
 - **Prices are cached for 15 minutes.** When offline, the app uses the last known
   price and labels it as stale. A net-worth snapshot is only recorded when every
   holding could be priced.
-- **Design:** an Apple-style base with a layout modeled on Rocket Money.
-  - Apple-style base: system grays with grouped white cards (true black in dark
-    mode), Apple blue, filled input fields, a frosted top bar, segmented
-    controls, and rounded rectangles instead of pill shapes.
+- **Design:** modeled on Google Calendar, with a layout modeled on Rocket Money.
+  - Google Calendar look: a soft blue-white page with outlined white panels
+    (charcoal in dark mode), tinted highlights for the current tab and choices,
+    a raised Add button like Calendar's Create, regular-weight titles, and color.
+    Every category gets one of Calendar's eleven event colors, on its round
+    icon and on its checkbox in the category picker. Transactions are listed
+    like Calendar's schedule view, with a date badge beside each day.
   - Home screen: spending this month and how it compares with the same point
     last month, a running-total chart against last month, net worth, upcoming
     bills, and recent activity.

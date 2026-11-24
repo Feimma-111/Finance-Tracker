@@ -205,6 +205,23 @@ export interface NetWorthLine extends Holding {
   balance_change_cents: number; // cash: moved by linked transactions and transfers since balance_as_of
 }
 
+/** One line under a holding's dropdown. Amounts are in the holding's currency, signed. */
+export interface ActivityItem {
+  type: "expense" | "income" | "transfer" | "bought";
+  id: number;
+  date: string | null;
+  description: string;
+  category: string | null; // a transfer's note
+  amount_cents: number | null;
+  quantity?: number;
+  counted: boolean; // false: already part of the balance you entered
+}
+export interface HoldingActivity {
+  holding: Holding;
+  items: ActivityItem[];
+  balance: { date: string; amount_cents: number | null } | null; // when the balance was last entered
+}
+
 /** Money moved between two of your own accounts (not spending or income). */
 export interface TransferItem {
   id: number;
@@ -424,6 +441,7 @@ export const api = {
   },
 
   holdings: () => request<Holding[]>("/api/holdings"),
+  holdingActivity: (id: number) => request<HoldingActivity>(`/api/holdings/${id}/activity`),
   addHolding: (body: NewHolding) => request<Holding>("/api/holdings", json("POST", body)),
   updateHolding: (
     id: number,

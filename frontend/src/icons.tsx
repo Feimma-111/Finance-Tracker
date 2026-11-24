@@ -1,10 +1,12 @@
 // Icons: an emoji per category (picked by keywords in the category or
-// description) on a softly tinted rounded square, Rocket Money style, plus the
-// small line icons used in the phone tab bar.
+// description) on a round badge in one of Google Calendar's event colors, plus
+// the small line icons used in the phone tab bar. Every category gets a color:
+// known ones a fitting one, others one picked from the name, so it's stable.
 
 import type { AssetType } from "./api";
 
-type Tint = "orange" | "green" | "blue" | "purple" | "pink" | "teal" | "yellow" | "red" | "indigo" | "gray";
+type Tint = "orange" | "green" | "blue" | "purple" | "pink" | "teal" | "yellow" | "red" | "indigo" | "lavender" | "gray";
+const NAME_TINTS: Tint[] = ["blue", "orange", "green", "purple", "pink", "teal", "yellow", "red", "indigo", "lavender"];
 
 // First match wins, so more specific words come first.
 const RULES: { words: string[]; emoji: string; tint: Tint }[] = [
@@ -37,13 +39,25 @@ function match(text: string) {
   return RULES.find((rule) => rule.words.some((w) => low.includes(w)));
 }
 
+/** A category's color tint: from its keywords, else picked from its name (always the same). */
+function categoryTint(category: string, hint?: string): Tint {
+  const found = match(category) ?? (hint ? match(hint) : undefined);
+  if (found) return found.tint;
+  let hash = 0;
+  for (const ch of category.trim().toLowerCase()) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return NAME_TINTS[hash % NAME_TINTS.length];
+}
+
+/** The category's color as a CSS value, e.g. for its checkbox in the category picker. */
+export const categoryColor = (category: string) => `var(--tint-${categoryTint(category)})`;
+
 /** A category's icon. ``hint`` (e.g. the description) is tried if the category has no match. */
 export function CategoryIcon({ category, hint, size = 36 }: { category: string; hint?: string; size?: number }) {
   const found = match(category) ?? (hint ? match(hint) : undefined);
   const letter = category.trim().charAt(0).toUpperCase() || "•";
   return (
     <span
-      className={`icon-tile tint-${found?.tint ?? "gray"}`}
+      className={`icon-tile tint-${categoryTint(category, hint)}`}
       style={{ width: size, height: size, fontSize: found ? size * 0.5 : size * 0.42 }}
       aria-hidden="true"
     >

@@ -1,12 +1,13 @@
-import { useState, type FormEvent, type KeyboardEvent } from "react";
-import { api, type Change, type HoldingsReview, type NetWorthLine, type Period, type PortfolioHolding } from "../api";
+import { Fragment, useState, type FormEvent, type KeyboardEvent } from "react";
+import { api, type AssetType, type Change, type HoldingsReview, type NetWorthLine, type Period, type PortfolioHolding } from "../api";
 import { AiStatusLine, isOnline } from "../components/AiParts";
 import { AllocationDonut, NetWorthChart } from "../components/charts";
 import { HoldingForm } from "../components/forms";
 import { Sheet } from "../components/Sheet";
-import { assetMeta, currencySymbol, dateLabel, money, moneyIn, quantity, seriesVar, signedMoney } from "../format";
+import { assetMeta, currencySymbol, dateCompact, dateLabel, money, moneyIn, quantity, seriesVar, signedMoney } from "../format";
 import { useAsync } from "../hooks";
 import { AssetIcon } from "../icons";
+import { DateInput } from "../components/DateInput";
 
 export function Holdings({ version, onChanged }: { version: number; onChanged: () => void }) {
   const worth = useAsync(api.netWorth, [version]);
@@ -54,9 +55,9 @@ export function Holdings({ version, onChanged }: { version: number; onChanged: (
           <div className={`card ${worth.loading && worth.data ? "refreshing" : ""}`}>
             <div className="card-head">
               <h2 className="card-title">Everything you own</h2>
-              <span className="card-subtitle">Click one to edit it · prices refresh every 15 minutes</span>
+              <span className="card-subtitle">Click one to see its activity · prices refresh every 15 minutes</span>
             </div>
-            {worth.data && <HoldingsTable lines={worth.data.lines} onEdit={setEditing} />}
+            {worth.data && <HoldingsTable lines={worth.data.lines} onEdit={setEditing} version={version} />}
           </div>
         </div>
 
@@ -320,25 +321,33 @@ function HoldingsAi() {
   );
 }
 
-/* ------------------------------------------------------------------ everything you own */
+/* ------------------------------------------------------------------ everything you own
+   Grouped by type with a subtotal each. Clicking a holding opens a dropdown
+   of what moved it (an account's transactions and transfers, newest first),
+   with an Edit button. */
 
-function HoldingsTable({ lines, onEdit }: { lines: NetWorthLine[]; onEdit: (line: NetWorthLine) => void }) {
+const TYPE_ORDER: AssetType[] = ["cash", "stock", "crypto", "gold", "other"];
+
+function HoldingsTable({ lines, onEdit, version }: { lines: NetWorthLine[]; onEdit: (line: NetWorthLine) => void; version: number }) {
+  const [open, setOpen] = useState<number | null>(null);
   if (!lines.length) return <p className="empty">Nothing here yet. Add your first holding on the right.</p>;
 
-  const onKey = (event: KeyboardEvent, line: NetWorthLine) => {
+  const toggle = (id: number) => setOpen((current) => (current === id ? null : id));
+  const onKey = (event: KeyboardEvent, id: number) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      onEdit(line);
+      toggle(id);
     }
   };
+  const groups = TYPE_ORDER.map((type) => ({ type, lines: lines.filter((l) => l.asset_type === type) }))
+    .filter((g) => g.lines.length);
 
   return (
     <div className="table-wrap">
-      <table className="clickable-rows">
+      <table className="clickable-rows holdings-table">
         <thead>
           <tr>
             <th>Holding</th>
-            <th className="hide-narrow">Type</th>
             <th className="right">
               <span className="hide-narrow">Quantity</span>
               <span className="show-narrow">Qty</span>
@@ -347,50 +356,147 @@ function HoldingsTable({ lines, onEdit }: { lines: NetWorthLine[]; onEdit: (line
             <th className="right">Value</th>
           </tr>
         </thead>
-        <tbody>
-          {lines.map((line) => {
-            const meta = assetMeta(line.asset_type);
-            return (
-              <tr
-                key={line.id}
-                tabIndex={0}
-                role="button"
-                aria-label={`Edit ${line.name}`}
-                onClick={() => onEdit(line)}
-                onKeyDown={(e) => onKey(e, line)}
-              >
-                <td>
-                  <div className="holding-name">
-                    <AssetIcon type={line.asset_type} size={32} />
-                    <div>
-                      {line.name}
-                      {line.symbol && line.symbol !== line.name && line.asset_type !== "gold" && (
-                        <span className="subtle"> · {line.symbol}</span>
-                      )}
-                      {line.note && <div className="subtle">{line.note}</div>}
-                      {line.asset_type === "cash" && <BalanceNote line={line} />}
-                    </div>
-                  </div>
-                </td>
-                <td className="hide-narrow" style={{ whiteSpace: "nowrap" }}>
-                  <span className="swatch" style={{ background: seriesVar(meta.slot), marginRight: 8, verticalAlign: -1 }} />
+        {groups.map((group) => {
+          const meta = assetMeta(group.type);
+          const subtotal = group.lines.reduce((sum, l) => sum + (l.value_cents ?? 0), 0);
+          return (
+            <tbody key={group.type} className="holding-group">
+              <tr className="group-row">
+                <th colSpan={3} scope="rowgroup">
+                  <span className="swatch" style={{ background: seriesVar(meta.slot) }} />
                   {meta.label}
-                </td>
-                <td className="right num">{isPriced(line) ? quantity(line.quantity) : ""}</td>
-                <td className="right num hide-narrow">
-                  {line.unit_price !== null
-                    ? `$${line.unit_price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                    : ""}
-                </td>
-                <td className="right num" style={{ whiteSpace: "nowrap" }}>
-                  {line.value_cents !== null ? money(line.value_cents) : <span className="subtle">n/a</span>}
-                  <span className="row-chevron" aria-hidden="true">›</span>
-                </td>
+                  <span className="subtle"> · {group.lines.length}</span>
+                </th>
+                <th className="right num">{money(subtotal)}</th>
               </tr>
-            );
-          })}
-        </tbody>
+              {group.lines.map((line) => (
+                <HoldingRow
+                  key={line.id}
+                  line={line}
+                  open={open === line.id}
+                  onToggle={() => toggle(line.id)}
+                  onKey={(e) => onKey(e, line.id)}
+                  onEdit={() => onEdit(line)}
+                  version={version}
+                />
+              ))}
+            </tbody>
+          );
+        })}
       </table>
+    </div>
+  );
+}
+
+function HoldingRow({
+  line, open, onToggle, onKey, onEdit, version,
+}: {
+  line: NetWorthLine; open: boolean; onToggle: () => void; onKey: (e: KeyboardEvent) => void; onEdit: () => void; version: number;
+}) {
+  return (
+    <>
+      <tr
+        tabIndex={0}
+        role="button"
+        aria-expanded={open}
+        aria-label={`${line.name}: show activity`}
+        className={open ? "open" : undefined}
+        onClick={onToggle}
+        onKeyDown={onKey}
+      >
+        <td>
+          <div className="holding-name">
+            <AssetIcon type={line.asset_type} size={32} />
+            <div>
+              {line.name}
+              {line.symbol && line.symbol !== line.name && line.asset_type !== "gold" && (
+                <span className="subtle"> · {line.symbol}</span>
+              )}
+              {line.note && <div className="subtle">{line.note}</div>}
+              {line.asset_type === "cash" && <BalanceNote line={line} />}
+            </div>
+          </div>
+        </td>
+        <td className="right num">{isPriced(line) ? quantity(line.quantity) : ""}</td>
+        <td className="right num hide-narrow">
+          {line.unit_price !== null
+            ? `$${line.unit_price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            : ""}
+        </td>
+        <td className="right num" style={{ whiteSpace: "nowrap" }}>
+          {line.value_cents !== null ? money(line.value_cents) : <span className="subtle">n/a</span>}
+          <span className={`row-chevron disclosure ${open ? "open" : ""}`} aria-hidden="true">›</span>
+        </td>
+      </tr>
+      {open && (
+        <tr className="activity-row">
+          <td colSpan={4}>
+            <Activity line={line} onEdit={onEdit} version={version} />
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+/** The dropdown: newest first, in the holding's own currency. */
+function Activity({ line, onEdit, version }: { line: NetWorthLine; onEdit: () => void; version: number }) {
+  const activity = useAsync(() => api.holdingActivity(line.id), [line.id, version]);
+  const own = (cents: number) => moneyIn(cents, line.currency);
+  const data = activity.data;
+  const cash = line.asset_type === "cash";
+  // Where the balance was entered: after the items that came later, before the ones it already includes.
+  const markerAt = data?.balance ? data.items.findIndex((i) => !i.counted) : -1;
+  const marker = data?.balance && (
+    <li key="balance" className="activity-item balance-marker">
+      <span className="activity-date">{dateCompact(data.balance.date)}</span>
+      <span className="activity-main">Balance set to {own(data.balance.amount_cents ?? 0)}</span>
+      <span />
+    </li>
+  );
+
+  return (
+    <div className="activity">
+      <div className="activity-head">
+        <strong>{cash ? "Activity" : "Purchase"}</strong>
+        <button type="button" className="btn btn-small" onClick={onEdit}>Edit {cash ? "account" : "holding"}</button>
+      </div>
+      {activity.error && <p className="message error">{activity.error}</p>}
+      {data && !data.items.length && !data.balance && (
+        <p className="hint" style={{ margin: 0 }}>
+          {cash
+            ? "Nothing linked yet. When you add a transaction, choose this account under “Paid from”."
+            : "Add when you bought it and the price you paid (Edit holding) to see it here."}
+        </p>
+      )}
+      {data && (data.items.length > 0 || data.balance) && (
+        <ol className="activity-list">
+          {data.items.map((item, index) => (
+            <Fragment key={`${item.type}-${item.id}`}>
+              {index === markerAt && marker}
+              <li className={`activity-item ${item.counted ? "" : "settled"}`}>
+                <span className="activity-date">{item.date ? dateCompact(item.date) : "—"}</span>
+                <span className="activity-main">
+                  {item.type === "bought"
+                    ? `Bought ${quantity(item.quantity ?? 0)} ${line.asset_type === "stock" ? "shares" : line.asset_type === "gold" ? "oz" : "units"}`
+                    : item.description}
+                  {item.type === "transfer" && <span className="activity-tag">Transfer</span>}
+                  {item.category && <span className="subtle"> · {item.category}</span>}
+                </span>
+                <span className={`num ${item.amount_cents !== null && item.amount_cents > 0 && item.type !== "bought" ? "amount-income" : ""}`}>
+                  {item.amount_cents === null ? "" : item.type === "bought"
+                    ? `paid ${money(item.amount_cents)}`
+                    : `${item.amount_cents > 0 ? "+" : "−"}${own(Math.abs(item.amount_cents))}`}
+                </span>
+              </li>
+            </Fragment>
+          ))}
+          {markerAt === -1 && marker}
+        </ol>
+      )}
+      {data && cash && data.items.some((i) => !i.counted) && (
+        <p className="hint" style={{ margin: "6px 0 0" }}>Greyed items came before the balance was set, so they're already in it.</p>
+      )}
     </div>
   );
 }
@@ -484,7 +590,7 @@ function EditHoldingSheet({ line, onClose, onSaved }: { line: NetWorthLine; onCl
             <div className="field-row">
               <label className="field">
                 <span>Bought on</span>
-                <input type="date" value={boughtOn} onChange={(e) => setBoughtOn(e.target.value)} />
+                <DateInput value={boughtOn} onChange={setBoughtOn} />
               </label>
               <label className="field">
                 <span>Average price paid</span>
