@@ -4,6 +4,13 @@ import { monthLabel } from "../format";
 import { useAsync, type AsyncState } from "../hooks";
 import { AiAsk } from "./AiAsk";
 import { AiStatusLine, isOnline, ReviewBody } from "./AiParts";
+import { FollowUpChat, reviewText } from "./FollowUpChat";
+
+const REVIEW_FOLLOW_UPS = [
+  "Why was this month different?",
+  "What changed most from last month?",
+  "Which purchases could I cut first?",
+];
 
 /**
  * The AI review for one month. The model runs on your PC, so this card has to
@@ -99,6 +106,13 @@ export function AiReview({ month, version, status }: { month: string; version: n
             </div>
           )}
           <ReviewBody review={review.review} model={review.model} createdAt={review.created_at} facts={review.facts} />
+          <FollowUpChat
+            chatKey={`review:${month}:${review.created_at}`}
+            analysis={reviewText(review.review)}
+            about={{ review_month: month }}
+            online={online}
+            suggestions={REVIEW_FOLLOW_UPS}
+          />
         </div>
       ) : (
         !busy && saved.data && (

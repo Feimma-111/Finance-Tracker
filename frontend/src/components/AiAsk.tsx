@@ -22,8 +22,10 @@ const TOOL_LABELS: Record<string, string> = {
   net_worth_history: "Checked net worth history",
 };
 
-/** Models like to write **bold**; show it as bold (as React text, never as HTML). */
+/** Models like to write **bold** and "*   item" lists; show them as bold and
+    bullets (as React text, never as HTML). */
 function withBold(text: string) {
+  text = text.replace(/^[ \t]*[*-][ \t]+/gm, "• ");
   return text.split(/(\*\*[^*\n]+\*\*)/g).map((part, i) =>
     part.startsWith("**") && part.endsWith("**") && part.length > 4
       ? <strong key={i}>{part.slice(2, -2)}</strong>

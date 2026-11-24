@@ -203,6 +203,10 @@ class FakeAI:
     def models(self):
         return ["qwen3.5:latest"]
 
+    def review(self, model, facts, focus=False):
+        from finance_tracker.analyst import Review
+        return Review("A steady month.", ["Groceries were the biggest cost."], ["Plan meals."])
+
     def chat(self, model, messages, tools):
         FakeAI.sent.append(messages)
         if messages[-1]["role"] == "user":
@@ -241,6 +245,18 @@ class AskApiTests(unittest.TestCase):
                 self.assertIn("Boba (Food)", context)
                 self.assertEqual(client.post("/api/ai/ask", json={
                     "question": "Why?", "focus": {"categories": ["Nope"]}}).status_code, 400)
+
+                # A follow-up on the month's review: its saved fact sheet is the context.
+                review_question = {"question": "Why?", "review_month": "2026-11"}
+                self.assertEqual(client.post("/api/ai/ask", json=review_question).status_code, 400)  # no review yet
+                saved = client.post("/api/ai/reviews/2026-11").json()
+                client.post("/api/transactions", json={  # data changes after the review...
+                    "description": "Late boba", "amount": "7", "category": "Food", "occurred_on": "2026-11-20"})
+                FakeAI.sent = []
+                self.assertEqual(client.post("/api/ai/ask", json=review_question).status_code, 200)
+                context = FakeAI.sent[0][1]["content"]
+                self.assertIn(saved["facts"], context)  # ...but the chat uses what the review saw
+                self.assertNotIn("Late boba", context)
 
 
 if __name__ == "__main__":

@@ -110,6 +110,9 @@ export interface ReviewText {
   suggestions: string[];
 }
 
+/** What a follow-up question is about: the server uses that analysis's facts as context. */
+export type AskAbout = { focus?: { month: string; categories: string[] }; review_month?: string };
+
 export interface SavedReview {
   month: string;
   created_at: string; // ISO timestamp, UTC
@@ -402,8 +405,8 @@ export const api = {
   focusReview: (month: string, categories: string[]) =>
     request<FocusResult>("/api/ai/focus", json("POST", { month, categories })),
   aiChanged: () => request<{ changed_at: string | null }>("/api/ai/changed"),
-  ask: (question: string, history: ChatTurn[], focus?: { month: string; categories: string[] }) =>
-    request<AskResult>("/api/ai/ask", json("POST", { question, history, focus })),
+  ask: (question: string, history: ChatTurn[], about?: AskAbout) =>
+    request<AskResult>("/api/ai/ask", json("POST", { question, history, ...about })),
 
   recurring: () => request<RecurringRule[]>("/api/recurring"),
   addRecurring: (body: Omit<NewTransaction, "occurred_on"> & { frequency: Frequency; start_on: string }) =>

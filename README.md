@@ -304,6 +304,13 @@ reliably. "What the AI was shown" on each review displays that fact sheet.
 If any transactions or covered expenses change after a review was written, the
 review says so and offers to write a new one.
 
+**Ask about the review.** Under each review you can ask follow-up questions
+("Why was this month different?"). The model gets the exact fact sheet the
+review was written from, so the chat and the review can't disagree. It can
+also use the same lookup tools as the question chat for anything else, and the
+same number check applies. Like that chat, the conversation lasts for the
+browser session.
+
 **Ask a question.** The card's second tab answers questions in plain English,
 such as "How much did I spend on food since August?". The model can't see the
 database directly. It can only call read-only lookup tools in `assistant.py`:

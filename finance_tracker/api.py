@@ -63,7 +63,8 @@ GET    /api/ai/reviews/{month}       the last saved AI review for a month
 POST   /api/ai/reviews/{month}       generate a new review on the PC
 POST   /api/ai/focus                 review only the chosen categories (not saved)
 GET    /api/ai/changed               when the data reviews are based on last changed
-POST   /api/ai/ask                   answer a question (the model uses lookup tools)
+POST   /api/ai/ask                   answer a question (the model uses lookup tools); optionally a
+                                     follow-up on a category analysis or a month's review
 
 Recurring transactions are caught up at the start of *every* request, so
 whatever opens the app -- your laptop, your phone, a server that's always on --
@@ -223,6 +224,7 @@ class QuestionIn(BaseModel):
     question: str = Field(min_length=1, max_length=500)
     history: List[ChatTurn] = Field(default_factory=list, max_length=20)
     focus: Optional[FocusIn] = Field(None, description="follow-up on 'AI on these categories'")
+    review_month: Optional[str] = Field(None, description="follow-up on the saved review of this month (YYYY-MM)")
 
 
 class ImportMapping(BaseModel):
@@ -632,12 +634,20 @@ def create_app(
         """Answer a question using read-only lookup tools. Takes ~2-20 seconds.
 
         With ``focus``, it's a follow-up on "AI on these categories": the same
-        fact sheet is rebuilt here and given to the model as context.
+        fact sheet is rebuilt here and given to the model as context. With
+        ``review_month``, it's a follow-up on that month's saved review, and
+        the context is the fact sheet that review was written from, so the
+        chat and the review can't disagree.
         """
         context = None
         if body.focus:
             focus_month = _month_or_400(body.focus.month) or month_of(today())
             context = focus_facts(store, focus_month, _categories_or_400(store, body.focus.categories), today())
+        elif body.review_month:
+            saved = store.latest_review(_month_or_400(body.review_month))
+            if saved is None:
+                raise HTTPException(400, "There's no saved review for that month yet.")
+            context = saved["facts"]
         client = ai_client(store)
         try:
             model = pick_model(client.models(), store.get_setting("ai_model", ""))
