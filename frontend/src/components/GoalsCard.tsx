@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
-import { api, type AiStatus, type Goal, type SavingsCheck } from "../api";
-import { currencySymbol, dateCompact, dateLabel, displayCurrency, money, moneyIn } from "../format";
+import { api, type AiStatus, type Goal, type SavingsCheck, type Transaction } from "../api";
+import { currencySymbol, dateCompact, displayCurrency, money, moneyIn } from "../format";
 import { useAsync, type AsyncState } from "../hooks";
 import { useCashAccounts } from "./AccountField";
 import { AiStatusLine, isOnline } from "./AiParts";
@@ -208,13 +208,79 @@ function savedCheck(): SavingsCheck | null {
   }
 }
 
+/** "Is this $19,980 in Family money for Rent and Tuition?" -- one tap marks it. */
+function OneOffQuestion({ covered, onMarked }: { covered: string[]; onMarked: () => void }) {
+  const deposits = useAsync(api.oneOffDeposits, []);
+  const [dismissed, setDismissed] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("finance-tracker:not-family") ?? "[]");
+    } catch {
+      return [];
+    }
+  });
+  const [error, setError] = useState<string | null>(null);
+  const byCategory = new Map<string, Transaction[]>();
+  for (const t of deposits.data ?? []) {
+    if (!dismissed.includes(t.category)) byCategory.set(t.category, [...(byCategory.get(t.category) ?? []), t]);
+  }
+  if (!covered.length || !byCategory.size) return null;
+
+  async function yes(category: string) {
+    setError(null);
+    try {
+      const settings = await api.settings();
+      await api.saveSettings({ covered_income_categories: [...settings.covered_income_categories, category] });
+      onMarked();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  function no(category: string) {
+    const next = [...dismissed, category];
+    setDismissed(next);
+    try {
+      localStorage.setItem("finance-tracker:not-family", JSON.stringify(next));
+    } catch {
+      // ignore
+    }
+  }
+
+  return (
+    <>
+      {[...byCategory].map(([category, items]) => {
+        const total = items.reduce((sum, t) => sum + t.amount_cents, 0);
+        const first = items[items.length - 1];
+        return (
+          <div key={category} className="notice one-off">
+            <span>
+              <strong>{money(total)}</strong> came in under “{category}”
+              {items.length === 1 ? ` (${first.description}, ${dateCompact(first.occurred_on)})` : ` in ${items.length} big deposits`}.
+              Is it money for {covered.join(" and ")}? If so, it isn't counted as money you can save.
+            </span>
+            <span className="one-off-actions">
+              <button type="button" className="btn btn-small btn-primary" onClick={() => yes(category)}>Yes, it pays for them</button>
+              <button type="button" className="btn btn-small" onClick={() => no(category)}>No, it's mine</button>
+            </span>
+          </div>
+        );
+      })}
+      {error && <p className="message error" style={{ margin: 0 }}>{error}</p>}
+    </>
+  );
+}
+
 function SavingsCheckPanel({ status, hasGoals }: { status: AsyncState<AiStatus>; hasGoals: boolean }) {
-  const settings = useAsync(api.settings, []);
+  const [settingsVersion, setSettingsVersion] = useState(0);
+  const settings = useAsync(api.settings, [settingsVersion]);
   const [result, setResult] = useState<SavingsCheck | null>(savedCheck);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const online = isOnline(status.data);
   const income = settings.data?.income;
+  // Goals, pay, covered costs or transactions changed after this check was written?
+  const changed = useAsync(api.aiChanged, [result?.created_at]);
+  const outdated = !!(result && changed.data?.changed_at && Date.parse(changed.data.changed_at) > Date.parse(result.created_at));
+  const unmarkedFamilyMoney = !!settings.data?.covered_categories.length && !settings.data.covered_income_categories.length;
 
   async function check() {
     setBusy(true);
@@ -265,10 +331,27 @@ function SavingsCheckPanel({ status, hasGoals }: { status: AsyncState<AiStatus>;
           about {moneyIn(income.monthly_cents, income.currency)} a month take-home.
         </p>
       )}
+      <OneOffQuestion
+        key={settingsVersion}
+        covered={settings.data?.covered_categories ?? []}
+        onMarked={() => setSettingsVersion((v) => v + 1)}
+      />
+      {unmarkedFamilyMoney && (
+        <p className="hint" style={{ margin: 0 }}>
+          Does someone send you money for your covered costs (like tuition or rent)? Tick that income in{" "}
+          <a href="#/settings">Settings → Covered by someone else</a>, or it gets counted as money you can save.
+        </p>
+      )}
       {busy && <p className="hint" style={{ margin: 0 }}>Asking the model on your PC. This usually takes 5–30 seconds.</p>}
       {error && <p className="message error" style={{ margin: 0 }}>{error}</p>}
       {result ? (
         <div className={`ai-review ${busy ? "refreshing" : ""}`}>
+          {outdated && (
+            <div className="notice">
+              <span>Your goals, pay, covered costs or transactions changed after this check, so it may not reflect them.</span>
+              {online && <button className="btn btn-small" type="button" onClick={check} disabled={busy}>Check again</button>}
+            </div>
+          )}
           <p className="ai-headline">{result.review.headline}</p>
           <div className="grid grid-2 ai-columns">
             {section("What you can save", result.review.can_save)}
@@ -276,8 +359,8 @@ function SavingsCheckPanel({ status, hasGoals }: { status: AsyncState<AiStatus>;
           </div>
           <div style={{ marginTop: 14 }}>{section("Ideas", result.review.ideas)}</div>
           <p className="subtle ai-meta">
-            Written {dateLabel(result.created_at.slice(0, 10))} by {result.model}. AI can make mistakes, and this isn't
-            financial advice.
+            Written {new Date(result.created_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+            {" "}by {result.model}. AI can make mistakes, and this isn't financial advice.
           </p>
           <details className="table-view">
             <summary>What the AI was shown</summary>

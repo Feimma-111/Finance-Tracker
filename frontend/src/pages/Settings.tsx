@@ -220,11 +220,13 @@ function PasscodeSettings() {
 /** Categories someone else pays for, so the AI doesn't suggest cutting them. */
 function CoveredSettings({ settings, onSaved }: { settings: SettingsData; onSaved: (s: SettingsData) => void }) {
   const categories = useAsync(() => api.categories("expense"), []);
+  const incomeCategories = useAsync(() => api.categories("income"), []);
+  const paidBy = new Set(settings.covered_income_categories);
   const [note, setNote] = useState(settings.covered_note);
   const [error, setError] = useState<string | null>(null);
   const covered = new Set(settings.covered_categories);
 
-  async function save(patch: Partial<Pick<SettingsData, "covered_categories" | "covered_note">>) {
+  async function save(patch: Partial<Pick<SettingsData, "covered_categories" | "covered_note" | "covered_income_categories">>) {
     setError(null);
     try {
       onSaved(await api.saveSettings(patch));
@@ -238,6 +240,13 @@ function CoveredSettings({ settings, onSaved }: { settings: SettingsData; onSave
     if (next.has(name)) next.delete(name);
     else next.add(name);
     save({ covered_categories: [...next] });
+  }
+
+  function toggleIncome(name: string) {
+    const next = new Set(paidBy);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    save({ covered_income_categories: [...next] });
   }
 
   return (
@@ -258,6 +267,24 @@ function CoveredSettings({ settings, onSaved }: { settings: SettingsData; onSave
         </div>
       ) : (
         <span className="subtle">Your categories will show up here once you've added some transactions.</span>
+      )}
+      <h4 className="setting-subhead">Money that pays for them</h4>
+      <span className="hint">
+        If someone sends you money for these (say, your parents send money for tuition and rent), tick the income
+        category it's under. The savings check then doesn't count it as income you earned. Instead it subtracts the
+        covered costs from it, and anything left is counted once as yours, not as monthly income.
+      </span>
+      {incomeCategories.data?.length ? (
+        <div className="toggle-list" role="group" aria-label="Income that pays for covered costs">
+          {incomeCategories.data.map((name) => (
+            <label key={name} className={`toggle ${paidBy.has(name) ? "on" : ""}`}>
+              <input type="checkbox" checked={paidBy.has(name)} onChange={() => toggleIncome(name)} />
+              {name}
+            </label>
+          ))}
+        </div>
+      ) : (
+        <span className="subtle">Your income categories will show up here once you've recorded some income.</span>
       )}
       <label className="field" style={{ maxWidth: 380 }}>
         <span>Who covers them?</span>

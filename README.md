@@ -418,6 +418,19 @@ It says what you can realistically save, whether each goal is on track, and
 where to free up money. It doesn't recommend investments. Follow-up questions
 work like the other AI panels.
 
+**Money for covered costs.** If someone sends you money to pay for covered
+costs (say, parents send $19,900 for tuition and rent), record it as income in
+its own category, such as "Parents". Then tick that category in **Settings →
+Covered by someone else → Money that pays for them**.
+
+Without this, the check would count that money as income you earned while
+leaving the costs it pays for out of your spending, which inflates what you
+can save. With it, monthly figures use only income you earned. That money is
+instead netted against the covered costs over the last 12 months, since it
+arrives in lumps. Anything left over is counted once, as yours ("That leaves
+$8,300 of it for you: a one-time amount, not monthly income"). The monthly
+review shows the split too.
+
 ### Category suggestions
 
 When you add a transaction, the category fills itself in from what you've used

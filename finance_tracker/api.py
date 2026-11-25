@@ -55,6 +55,7 @@ POST   /api/goals                    add one
 PUT    /api/goals/{id}               change one
 DELETE /api/goals/{id}               remove one
 POST   /api/ai/savings               the AI on how much you can save (not saved)
+GET    /api/savings/one-offs         big one-time deposits left out of monthly income
 GET    /api/transfers                moves between your own accounts
 POST   /api/transfers                record one (converts currencies at that day's rate if needed)
 DELETE /api/transfers/{id}           remove one
@@ -104,6 +105,8 @@ from .analyst import (
     OllamaClient,
     focus_facts,
     goal_plan,
+    one_off_income,
+    pay_estimate,
     holdings_facts,
     month_facts,
     normalize_url,
@@ -269,6 +272,8 @@ class SettingsIn(BaseModel):
     ai_model: Optional[str] = Field(None, max_length=100)
     covered_categories: Optional[List[str]] = Field(None, max_length=50)
     covered_note: Optional[str] = Field(None, max_length=120)
+    # Income categories that pay for the covered costs (e.g. money from parents).
+    covered_income_categories: Optional[List[str]] = Field(None, max_length=50)
     display_currency: Optional[str] = Field(None, max_length=3)
     travel_account_id: Optional[int] = Field(None, description="travel mode's account; null turns it off")
     # Your pay, for the savings check. "" clears the hourly rate.
@@ -520,6 +525,7 @@ def create_app(
             "ai_model": store.get_setting("ai_model", ""),
             "covered_categories": store.covered_categories()[0],
             "covered_note": store.get_setting("covered_note", ""),
+            "covered_income_categories": store.covered_income(),
             "display_currency": display if (display := store.get_setting("display_currency", "USD")) in CURRENCIES else "USD",
             "travel_account_id": _travel_account(store),
             "currencies": [{"code": code, "symbol": symbol, "decimals": decimals}
@@ -553,6 +559,13 @@ def create_app(
         if body.covered_note is not None:
             store.set_setting("covered_note", body.covered_note.strip())
             store.mark_facts_changed()
+        if body.covered_income_categories is not None:
+            unknown = [c for c in body.covered_income_categories if not store.find_category(c)]
+            if unknown:
+                raise HTTPException(400, f"no category called {', '.join(repr(c) for c in unknown)}")
+            names = sorted({store.find_category(c) for c in body.covered_income_categories}, key=str.lower)
+            store.set_setting("covered_income_categories", json.dumps(names))
+            store.mark_facts_changed()
         if body.display_currency is not None:
             try:
                 store.set_setting("display_currency", check_currency(body.display_currency))
@@ -570,6 +583,8 @@ def create_app(
                 store.set_setting("income_hours_per_week", f"{body.income_hours_per_week:g}")
             if body.income_tax_pct is not None:
                 store.set_setting("income_tax_pct", f"{body.income_tax_pct:g}")
+            if {"income_hourly", "income_hours_per_week", "income_tax_pct"} & body.model_fields_set:
+                store.mark_facts_changed()  # the savings check uses your pay
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
         return settings_json(store)
@@ -1310,6 +1325,13 @@ def create_app(
         if not store.delete_goal(goal_id):
             raise HTTPException(404, f"no goal with id {goal_id}")
         return Response(status_code=204)
+
+    @app.get("/api/savings/one-offs")
+    def one_off_deposits(store: Store = Depends(get_store)) -> List[Dict[str, Any]]:
+        """Big one-time deposits the savings check leaves out of monthly income,
+        so the page can ask whether they're money for covered costs."""
+        pay = pay_estimate(store, price_service(store))
+        return [_tx_json(t) for t in one_off_income(store, today(), pay["monthly"] if pay else None)]
 
     @app.post("/api/ai/savings")
     def savings_check(store: Store = Depends(get_store)) -> Dict[str, Any]:

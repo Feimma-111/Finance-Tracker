@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .models import (
     GOLD_SYMBOL,
+    add_months,
     HOME_CURRENCY,
     AssetType,
     Frequency,
@@ -236,6 +237,13 @@ def month_facts(store: Store, month: str, today: date) -> str:
     income = sum(c for _, c in income_rows)
     lines.append(f"Total spending: {format_money(spent)}")
     lines.append(f"Total income: {format_money(income)}")
+    family = store.covered_income()
+    from_family = sum(c for name, c in income_rows if name in family)
+    if from_family:
+        lines.append(
+            f"Of that, {format_money(from_family)} is money from {', '.join(family)} for covered costs; "
+            f"income you earned: {format_money(income - from_family)}"
+        )
     if income:
         net = income - spent
         rate = net / income * 100
@@ -728,6 +736,48 @@ def holdings_facts(store: Store, service: PriceService, today: date) -> str:
 SAVINGS_MONTHS = 3  # complete months to average over
 
 
+def pay_estimate(store: Store, service: PriceService) -> Optional[Dict[str, Any]]:
+    """Your pay from Settings in US cents: hourly, hours a week, tax %, monthly
+    take-home and take-home per hour. None if it isn't set (or no rate)."""
+    hourly = int(store.get_setting("income_hourly_cents", "0") or 0)
+    hours = float(store.get_setting("income_hours_per_week", "0") or 0)
+    tax = float(store.get_setting("income_tax_pct", "0") or 0)
+    if not (hourly and hours):
+        return None
+    try:
+        rate = service.fx_rate(store.get_setting("income_currency", HOME_CURRENCY))
+    except PriceUnavailable:
+        return None
+    hourly_usd = round(hourly / rate)
+    return {
+        "hourly": hourly_usd,
+        "hours": hours,
+        "tax": tax,
+        "monthly": monthly_pay_cents(hourly_usd, hours, tax),
+        # Half a cent rounds up, like everywhere else money is rounded.
+        "take_home_hourly": int((Decimal(hourly_usd) * (100 - Decimal(str(tax))) / 100)
+                                .to_integral_value(rounding=ROUND_HALF_UP)),
+    }
+
+
+ONE_OFF_MIN = 100000  # $1,000
+
+
+def one_off_income(store: Store, today: date, monthly_pay: Optional[int]) -> List[Any]:
+    """Big single deposits in the last 12 months -- a lump from family, a tax
+    refund -- that would make "what you earn a month" look far bigger than it
+    is: at least $1,000 and twice your monthly pay ($3,000 if pay isn't set).
+    Income marked as paying for covered costs is handled separately."""
+    family = set(store.covered_income())
+    threshold = max(ONE_OFF_MIN, 2 * monthly_pay) if monthly_pay else 3 * ONE_OFF_MIN
+    start = add_months(today, -12)
+    return [
+        t for t in store.transactions()
+        if t.kind is Kind.INCOME and start <= t.occurred_on <= today
+        and t.category not in family and t.amount_cents >= threshold
+    ]
+
+
 def savings_facts(store: Store, service: PriceService, today: date) -> str:
     """Everything the savings check is told: pay, income and spending you
     control (averaged over recent complete months), what's left over, liquid
@@ -735,30 +785,17 @@ def savings_facts(store: Store, service: PriceService, today: date) -> str:
     lines: List[str] = [_month_header(month_of(today), today)]
 
     # ---- pay you told the app about
-    hourly = int(store.get_setting("income_hourly_cents", "0") or 0)
-    hours = float(store.get_setting("income_hours_per_week", "0") or 0)
-    tax = float(store.get_setting("income_tax_pct", "0") or 0)
-    pay_currency = store.get_setting("income_currency", HOME_CURRENCY)
-    take_home_hourly = None
-    estimate = None
-    if hourly and hours:
-        try:
-            rate = service.fx_rate(pay_currency)
-        except PriceUnavailable:
-            rate = None
-        if rate:
-            hourly_usd = round(hourly / rate)
-            estimate = monthly_pay_cents(hourly_usd, hours, tax)
-            # Half a cent rounds up, like everywhere else money is rounded.
-            take_home_hourly = int((Decimal(hourly_usd) * (100 - Decimal(str(tax))) / 100)
-                                   .to_integral_value(rounding=ROUND_HALF_UP))
-            lines.append("")
-            lines.append(
-                f"Your pay: {format_money(hourly_usd)} an hour, about {hours:g} hours a week"
-                + (f", with about {tax:g}% taken out for taxes" if tax else " (before tax)")
-                + f". That's about {format_money(estimate)} a month take-home "
-                  f"({format_money(take_home_hourly)} an hour after tax)."
-            )
+    pay = pay_estimate(store, service)
+    take_home_hourly = pay["take_home_hourly"] if pay else None
+    estimate = pay["monthly"] if pay else None
+    if pay:
+        lines.append("")
+        lines.append(
+            f"Your pay: {format_money(pay['hourly'])} an hour, about {pay['hours']:g} hours a week"
+            + (f", with about {pay['tax']:g}% taken out for taxes" if pay["tax"] else " (before tax)")
+            + f". That's about {format_money(estimate)} a month take-home "
+              f"({format_money(take_home_hourly)} an hour after tax)."
+        )
     if estimate is None:
         lines.append("")
         lines.append("Your hourly pay isn't set in Settings, so only recorded income is used.")
@@ -770,8 +807,14 @@ def savings_facts(store: Store, service: PriceService, today: date) -> str:
     first = min(month_totals) if month_totals else current
     months = [m for m in months if m >= first]
     covered, note = store.covered_categories()
+    family = store.covered_income()  # e.g. money from parents for tuition and rent: not income you earned
+    lumps = one_off_income(store, today, estimate)  # big one-time deposits: not monthly income either
     if months:
-        income = [sum(c for _, c in store.totals_by_category(Kind.INCOME, month=m)) for m in months]
+        income = [
+            sum(c for n, c in store.totals_by_category(Kind.INCOME, month=m) if n not in family)
+            - sum(t.amount_cents for t in lumps if month_of(t.occurred_on) == m)
+            for m in months
+        ]
         controlled_rows = [
             {n: c for n, c in store.totals_by_category(Kind.EXPENSE, month=m) if n not in covered} for m in months
         ]
@@ -779,16 +822,43 @@ def savings_facts(store: Store, service: PriceService, today: date) -> str:
         avg_income = round(statistics.mean(income))
         avg_spent = round(statistics.mean(controlled))
         label = ", ".join(f"{date(int(m[:4]), int(m[5:]), 1):%b} {format_money(v)}" for m, v in zip(reversed(months), reversed(income)))
-        lines.append(f"Income recorded in the last {len(months)} complete month(s): {label}; average {format_money(avg_income)}.")
+        if family:
+            lines.append(
+                f"Income you earned in the last {len(months)} complete month(s): {label}; average "
+                f"{format_money(avg_income)}. (Money from {', '.join(family)} is left out: it pays for covered costs.)"
+            )
+        else:
+            lines.append(
+                f"Income recorded in the last {len(months)} complete month(s): {label}; average {format_money(avg_income)}."
+            )
+        if lumps:
+            lines.append("One-time deposits, left out of the monthly figures (they aren't regular income):")
+            for t in lumps:
+                lines.append(f"- {t.occurred_on:%b} {t.occurred_on.day}: {t.description} ({t.category}) "
+                             f"{format_money(t.amount_cents)}")
+            if covered:
+                lines.append(f"If one of these pays for covered costs ({', '.join(covered)}), that's what it's for, "
+                             f"not money to save.")
         lines.append(
             f"Spending you control in those months: average {format_money(avg_spent)}"
             + (f" (costs covered by someone else -- {', '.join(covered)} -- left out)." if covered else ".")
         )
         lines.append("")
-        lines.append("Left over each month (income minus spending you control):")
-        lines.append(f"- From recorded income: {format_money(avg_income - avg_spent)} on average")
+        lines.append("Left over each month (income you earned minus spending you control):")
         if estimate is not None:
             lines.append(f"- From your pay estimate: {format_money(estimate - avg_spent)}")
+        lines.append(f"- From recorded income: {format_money(avg_income - avg_spent)} on average "
+                     f"({len(months)} month(s) of records)")
+        # One number to go by, chosen here: your normal pay when it's set
+        # (a few months of records swing a lot), else what was recorded.
+        best = (estimate if estimate is not None else avg_income) - avg_spent
+        source = "your pay estimate" if estimate is not None else "recorded income"
+        if best > 0:
+            lines.append(f"Best estimate (from {source}): about {format_money(best)} left over to save each month.")
+        else:
+            lines.append(f"Best estimate (from {source}): you spend about {format_money(-best)} a month more than "
+                         f"you earn, so nothing is left over to save from income right now; the difference comes "
+                         f"out of your cash.")
         totals: Dict[str, int] = {}
         for row in controlled_rows:
             for n, c in row.items():
@@ -797,10 +867,30 @@ def savings_facts(store: Store, service: PriceService, today: date) -> str:
         if biggest:
             lines.append("Biggest categories you control (average a month): " + ", ".join(
                 f"{n} {format_money(round(c / len(months)))}" for n, c in biggest))
-        surplus = (estimate if estimate is not None else avg_income) - avg_spent
+        surplus = best
     else:
         lines.append("There are no complete months recorded yet to average.")
         surplus = None
+
+    # Money for covered costs arrives in lumps (a semester's tuition, say), so
+    # it's netted against those costs over a year, not averaged per month.
+    if family:
+        start = add_months(today, -12)
+        received = sum(c for n, c in store.category_totals_between(Kind.INCOME, start, today) if n in family)
+        paid = sum(c for n, c in store.category_totals_between(Kind.EXPENSE, start, today) if n in covered)
+        left = received - paid
+        lines.append("")
+        which = f" ({', '.join(covered)})" if covered else ""
+        lines.append(
+            f"Money from {', '.join(family)} in the last 12 months: {format_money(received)}. "
+            f"Covered costs{which} paid in that time: {format_money(paid)}."
+        )
+        if left > 0:
+            lines.append(f"That leaves {format_money(left)} of it for you: a one-time amount, not monthly income.")
+        elif left < 0:
+            lines.append(f"Covered costs took all of it, and {format_money(-left)} more.")
+        else:
+            lines.append("Covered costs took all of it.")
 
     rules = [r for r in store.recurring_rules() if r.active and r.kind is Kind.EXPENSE and r.category not in covered]
     if rules:
@@ -831,24 +921,34 @@ def savings_facts(store: Store, service: PriceService, today: date) -> str:
             if plan is None:
                 lines.append(f"- {goal.name}: no exchange rate for {goal.currency} right now")
                 continue
-            line = (f"- {goal.name}: {format_money(plan.saved_cents)} of {format_money(plan.target_cents)} saved "
-                    f"({plan.share * 100:.0f}%), {format_money(plan.left_cents)} to go")
-            if goal.target_date:
-                line += f", by {goal.target_date:%b} {goal.target_date.day}, {goal.target_date.year}"
-                if plan.per_month_cents:
-                    needed += plan.per_month_cents
-                    line += f": {format_money(plan.per_month_cents)} a month"
-                    if take_home_hourly:
-                        line += f" (about {plan.per_month_cents / take_home_hourly:.1f} hours of work a month)"
-            else:
-                line += ", no date set"
+            # Still to go first: that's the number a goal is about (small models
+            # mixed up "saved" and "needed" when saved came first).
             if plan.left_cents == 0:
-                line += " -- reached"
+                line = f"- {goal.name}: reached (saved {format_money(plan.saved_cents)} of {format_money(plan.target_cents)})"
+            else:
+                line = (f"- {goal.name}: {format_money(plan.left_cents)} still to go "
+                        f"(saved {format_money(plan.saved_cents)} of {format_money(plan.target_cents)} so far, "
+                        f"{plan.share * 100:.0f}%)")
+                if goal.target_date:
+                    line += f"; to reach it by {goal.target_date:%b} {goal.target_date.day}, {goal.target_date.year}"
+                    if plan.per_month_cents:
+                        needed += plan.per_month_cents
+                        line += f", put aside {format_money(plan.per_month_cents)} a month"
+                        if take_home_hourly:
+                            line += f" (about {plan.per_month_cents / take_home_hourly:.1f} hours of work a month)"
+                else:
+                    line += "; no date set"
             lines.append(line)
+        # The verdict is worked out here too, so the model doesn't have to compare numbers.
         if needed and surplus is not None:
-            share = f"{needed / surplus * 100:.0f}% of what's left over each month" if surplus > 0 else \
-                "more than what's left over each month (nothing is left over on average)"
-            lines.append(f"Goals with dates need {format_money(needed)} a month together: {share}.")
+            if surplus <= 0:
+                verdict = "but nothing is left over on average, so they don't fit yet"
+            elif needed <= surplus:
+                verdict = f"{needed / surplus * 100:.0f}% of what's left over each month, so they fit"
+            else:
+                verdict = (f"more than the {format_money(surplus)} left over each month, so they don't fit "
+                           f"without spending less or earning more")
+            lines.append(f"Goals with dates need {format_money(needed)} a month together: {verdict}.")
     return "\n".join(lines)
 
 

@@ -364,6 +364,17 @@ class Store:
         note = self.get_setting("covered_note", "") or "Paid by someone else"
         return [n for n in existing if n], note
 
+    def covered_income(self) -> List[str]:
+        """Income categories that pay for the covered costs -- e.g. money from
+        parents for tuition and rent. It isn't income you earned: the savings
+        check nets it against the covered costs instead of counting it as yours."""
+        try:
+            names = json.loads(self.get_setting("covered_income_categories", "[]"))
+        except ValueError:
+            names = []
+        existing = [self.find_category(n) for n in names if isinstance(n, str)]
+        return [n for n in existing if n]
+
     # ------------------------------------------------------------- passcode
 
     def passcode_hash(self) -> Optional[str]:
@@ -1186,6 +1197,7 @@ class Store:
                  goal.target_date.isoformat() if goal.target_date else None, goal.account_id, goal.saved_cents,
                  _utc_now()),
             )
+            self._mark_facts_changed()  # the savings check talks about goals
         return cursor.lastrowid
 
     def goals(self) -> List[SavingsGoal]:
@@ -1210,11 +1222,13 @@ class Store:
                  goal.target_date.isoformat() if goal.target_date else None, goal.account_id, goal.saved_cents,
                  goal_id),
             )
+            self._mark_facts_changed()
         return cursor.rowcount > 0
 
     def delete_goal(self, goal_id: int) -> bool:
         with self.conn:
             cursor = self.conn.execute("DELETE FROM savings_goals WHERE id = ?", (goal_id,))
+            self._mark_facts_changed()
         return cursor.rowcount > 0
 
     # -------------------------------------------------------------- transfers

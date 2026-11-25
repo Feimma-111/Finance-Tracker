@@ -40,6 +40,7 @@ export interface Settings {
   ai_model: string;
   covered_categories: string[]; // expenses someone else pays for (e.g. a family member pays rent)
   covered_note: string;
+  covered_income_categories: string[]; // income that pays for the covered costs (e.g. money from parents)
   display_currency: string; // amounts are shown in this (USD by default)
   travel_account_id: number | null; // travel mode: new transactions default to this account
   currencies: { code: string; symbol: string; decimals: number }[];
@@ -449,7 +450,8 @@ export const api = {
   settings: () => request<Settings>("/api/settings"),
   saveSettings: (
     body: Partial<Pick<Settings,
-      "theme" | "ai_url" | "ai_model" | "covered_categories" | "covered_note" | "display_currency" | "travel_account_id">> & {
+      "theme" | "ai_url" | "ai_model" | "covered_categories" | "covered_note" | "covered_income_categories" |
+      "display_currency" | "travel_account_id">> & {
       income_hourly?: string; income_currency?: string; income_hours_per_week?: number; income_tax_pct?: number;
     },
   ) =>
@@ -528,6 +530,7 @@ export const api = {
   updateGoal: (id: number, body: GoalInput) => request<Goal>(`/api/goals/${id}`, json("PUT", body)),
   deleteGoal: (id: number) => request<void>(`/api/goals/${id}`, { method: "DELETE" }),
   savingsCheck: () => request<SavingsCheck>("/api/ai/savings", { method: "POST" }),
+  oneOffDeposits: () => request<Transaction[]>("/api/savings/one-offs"),
   saveCaps: (caps: { category: string; amount: string | null }[], currency: string) =>
     request<Caps>("/api/caps", json("PUT", { caps, currency })),
   transfers: () => request<TransferItem[]>("/api/transfers"),

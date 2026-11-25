@@ -922,3 +922,6 @@ select:focus { box-shadow: inset 0 0 0 2px var(--accent); }
 .goal.done .goal-fill { background: var(--positive); }
 .savings-check { display: grid; gap: 10px; margin-top: 12px; padding-top: 16px; border-top: 1px solid var(--border); }
 .suggested { color: var(--accent); }
+.setting-subhead { margin: 6px 0 0; font-size: 15px; font-weight: 500; }
+.one-off { margin: 0; }
+.one-off-actions { display: flex; gap: 8px; flex-wrap: wrap; }

@@ -71,10 +71,58 @@ class SavingsFactsTests(unittest.TestCase):
         self.assertIn("- From recorded income: $1,100.00 on average", facts)
         self.assertIn("- From your pay estimate: $1,091.10", facts)
         self.assertIn("Cash in your accounts right now: $600.00.", facts)
-        self.assertIn("- Japan trip: $600.00 of $1,500.00 saved (40%), $900.00 to go, by May 22, 2027: "
-                      "$151.35 a month (about 8.8 hours of work a month)", facts)
-        self.assertIn("- Laptop: $200.00 of $1,200.00 saved (17%), $1,000.00 to go, no date set", facts)
-        self.assertIn("Goals with dates need $151.35 a month together: 14% of what's left over each month.", facts)
+        self.assertIn("- Japan trip: $900.00 still to go (saved $600.00 of $1,500.00 so far, 40%); to reach it by "
+                      "May 22, 2027, put aside $151.35 a month (about 8.8 hours of work a month)", facts)
+        self.assertIn("- Laptop: $1,000.00 still to go (saved $200.00 of $1,200.00 so far, 17%); no date set", facts)
+        self.assertIn("Goals with dates need $151.35 a month together: 14% of what's left over each month, "
+                      "so they fit.", facts)
+
+    def test_money_from_parents_for_covered_costs(self):
+        # Parents send $19,900 for tuition and rent; the rest is the student's.
+        s = self.store
+        s.add_transaction(Transaction("From mom and dad", 1990000, "Parents", date(2026, 9, 2), Kind.INCOME))
+        s.add_transaction(Transaction("Fall tuition", 800000, "Tuition", date(2026, 9, 10)))
+        s.set_setting("covered_categories", '["Housing", "Tuition"]')
+        s.set_setting("covered_income_categories", '["parents"]')
+        facts = savings_facts(s, PriceService(s, FakeProvider({})), TODAY)
+        # Monthly: only the paychecks count, so what's left over stays realistic.
+        self.assertIn("Income you earned in the last 3 complete month(s): Aug $1,500.00, Sep $1,500.00, "
+                      "Oct $1,500.00; average $1,500.00. (Money from Parents is left out: it pays for covered costs.)",
+                      facts)
+        self.assertIn("- From recorded income: $1,100.00 on average", facts)
+        # Over the year: $19,900 in; rent 3 x $1,200 + tuition $8,000 = $11,600 out; $8,300 is theirs.
+        self.assertIn("Money from Parents in the last 12 months: $19,900.00. Covered costs (Housing, Tuition) "
+                      "paid in that time: $11,600.00.", facts)
+        self.assertIn("That leaves $8,300.00 of it for you: a one-time amount, not monthly income.", facts)
+
+        from finance_tracker.analyst import month_facts
+        september = month_facts(s, "2026-09", TODAY)
+        self.assertIn("Of that, $19,900.00 is money from Parents for covered costs; income you earned: $1,500.00",
+                      september)
+
+    def test_a_big_deposit_isnt_monthly_income(self):
+        # One $19,980 deposit from family, not marked as paying for covered costs.
+        s = self.store
+        s.add_transaction(Transaction("From mom", 1998000, "Family", date(2026, 10, 1), Kind.INCOME))
+        s.add_transaction(Transaction("Groceries", 140000, "Groceries", date(2026, 10, 9)))
+        facts = savings_facts(s, PriceService(s, FakeProvider({})), TODAY)
+        self.assertIn("Aug $1,500.00, Sep $1,500.00, Oct $1,500.00; average $1,500.00", facts)  # without the $19,980
+        self.assertIn("One-time deposits, left out of the monthly figures (they aren't regular income):\n"
+                      "- Oct 1: From mom (Family) $19,980.00", facts)
+        self.assertIn("If one of these pays for covered costs (Housing), that's what it's for", facts)
+        # Pay estimate $1,491.10 - spending you control ($400 + $1,400/3 = $866.67) = $624.43
+        self.assertIn("Best estimate (from your pay estimate): about $624.43 left over to save each month.", facts)
+
+    def test_spending_more_than_you_earn(self):
+        self.store.set_setting("income_hours_per_week", "4")  # about $298 a month
+        facts = savings_facts(self.store, PriceService(self.store, FakeProvider({})), TODAY)
+        self.assertIn("Best estimate (from your pay estimate): you spend about $101.78 a month more than you earn, "
+                      "so nothing is left over to save from income right now", facts)
+
+    def test_goals_that_dont_fit(self):
+        self.store.add_goal(SavingsGoal("Car", 1200000, target_date=date(2027, 5, 22)))  # $2,017 a month
+        facts = savings_facts(self.store, PriceService(self.store, FakeProvider({})), TODAY)
+        self.assertIn("so they don't fit without spending less or earning more", facts)
 
     def test_without_pay_set(self):
         self.store.set_setting("income_hourly_cents", "")
@@ -161,6 +209,24 @@ class GoalApiTests(unittest.TestCase):
 
         cleared = c.put("/api/settings", json={"income_hourly": ""}).json()["income"]
         self.assertEqual((cleared["hourly_cents"], cleared["monthly_cents"]), (None, None))
+
+    def test_covered_income_setting_and_changes(self):
+        c = self.client
+        c.post("/api/transactions", json={"description": "Mom", "amount": "500", "category": "Parents",
+                                          "kind": "income", "occurred_on": "2026-11-01"})
+        saved = c.put("/api/settings", json={"covered_income_categories": ["parents"]}).json()
+        self.assertEqual(saved["covered_income_categories"], ["Parents"])
+        self.assertEqual(c.put("/api/settings", json={"covered_income_categories": ["Nope"]}).status_code, 400)
+        # A big deposit that isn't marked shows up as a one-off, until it is.
+        c.post("/api/transactions", json={"description": "From mom", "amount": "19980", "category": "Family",
+                                          "kind": "income", "occurred_on": "2026-10-01"})
+        self.assertEqual([t["category"] for t in c.get("/api/savings/one-offs").json()], ["Family"])
+        c.put("/api/settings", json={"covered_income_categories": ["Parents", "Family"]})
+        self.assertEqual(c.get("/api/savings/one-offs").json(), [])
+        # Goals count as data the savings check depends on.
+        before = c.get("/api/ai/changed").json()["changed_at"]
+        c.post("/api/goals", json={"name": "Pi", "target": "260"})
+        self.assertGreater(c.get("/api/ai/changed").json()["changed_at"], before)
 
 
 if __name__ == "__main__":
