@@ -12,6 +12,7 @@ import {
   PurchaseDonut,
 } from "../components/charts";
 import { CapsCard } from "../components/CapsCard";
+import { GoalsCard } from "../components/GoalsCard";
 import { analyze, FocusReview, listNames } from "../components/FocusReview";
 import { isOnline } from "../components/AiParts";
 import { TransactionList } from "../components/TransactionList";
@@ -173,6 +174,8 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
           document.getElementById("spending-by-category")?.scrollIntoView({ behavior: "smooth", block: "start" });
         }}
       />
+
+      <GoalsCard version={version} onChanged={onChanged} status={ai} />
 
       <section id="spending-by-category" className={`card ${categories.loading && categories.data ? "refreshing" : ""}`} style={{ marginTop: 16 }}>
         <div className="card-head">

@@ -9,6 +9,7 @@ from __future__ import annotations
 import calendar
 import statistics
 from dataclasses import dataclass
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -96,6 +97,49 @@ def cap_statuses(
             continue
         out.append(CapStatus(name, to_home_cents(cents, units_per_dollar), spent.get(name, 0), share))
     return sorted(out, key=lambda c: (-c.share, c.category.lower()))
+
+
+# ------------------------------------------------------------- savings goals
+
+DAYS_PER_MONTH = 365.25 / 12
+
+
+@dataclass(frozen=True)
+class GoalPlan:
+    """A goal in US dollars: how far along it is and what it needs per month."""
+
+    name: str
+    target_cents: int
+    saved_cents: int
+    target_date: Optional[date]
+    today: date
+
+    @property
+    def left_cents(self) -> int:
+        return max(self.target_cents - self.saved_cents, 0)
+
+    @property
+    def share(self) -> float:
+        return min(self.saved_cents / self.target_cents, 1.0)
+
+    @property
+    def months_left(self) -> Optional[float]:
+        if self.target_date is None:
+            return None
+        return max((self.target_date - self.today).days, 0) / DAYS_PER_MONTH
+
+    @property
+    def per_month_cents(self) -> Optional[int]:
+        """What to put aside each month to reach it by its date (all of it if the date has passed)."""
+        months = self.months_left
+        if months is None or not self.left_cents:
+            return None if months is None else 0
+        return round(self.left_cents / max(months, 1.0)) if months >= 1 else self.left_cents
+
+
+def monthly_pay_cents(hourly_cents: int, hours_per_week: float, tax_pct: float = 0.0) -> int:
+    """Take-home pay in an average month: hourly x hours x 52 weeks / 12, minus tax."""
+    return round(hourly_cents * hours_per_week * 52 / 12 * (1 - tax_pct / 100))
 
 
 # ------------------------------------------------------------- monthly spend

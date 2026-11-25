@@ -25,12 +25,24 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import date, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .models import GOLD_SYMBOL, HOME_CURRENCY, AssetType, Kind, format_amount, format_money, month_of, shift_month
+from .models import (
+    GOLD_SYMBOL,
+    HOME_CURRENCY,
+    AssetType,
+    Frequency,
+    Kind,
+    format_amount,
+    format_money,
+    month_of,
+    shift_month,
+    to_home_cents,
+)
 from .portfolio import Return, account_balances, close_on, combine, holding_returns, period_start
 from .prices import PriceService, PriceUnavailable
-from .reports import cap_statuses, group_purchases, month_share, value_holdings
+from .reports import GoalPlan, cap_statuses, group_purchases, month_share, monthly_pay_cents, value_holdings
 from .store import Store
 
 BASELINE_MONTHS = 6
@@ -516,6 +528,42 @@ def focus_facts(store: Store, month: str, categories: Sequence[str], today: date
     return "\n".join(lines)
 
 
+SAVINGS_PROMPT = """\
+You are a friendly, practical savings coach looking at the user's income, \
+spending and savings goals.
+
+Rules:
+- Use ONLY the facts provided. Quote dollar amounts, hours and percentages \
+exactly as written. Never do arithmetic or produce a number that isn't in the facts.
+- Say how much the user can realistically put aside each month, and whether \
+each goal is on track for its date.
+- Ideas must be specific: aim them at the biggest categories they control or \
+at a cap that's over. Never suggest cutting costs someone else covers.
+- Don't recommend investments, accounts or financial products.
+- Plain, encouraging language. Address the user as "you". One short sentence per item.
+"""
+
+SAVINGS_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "headline": {"type": "string", "description": "One short sentence: how much you can save each month, and whether that's enough."},
+        "can_save": {
+            "type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 2,
+            "description": "What's typically left over each month, from the income and spending facts.",
+        },
+        "goals": {
+            "type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3,
+            "description": "Each goal: what it needs per month (and in hours of work) and whether that fits.",
+        },
+        "ideas": {
+            "type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3,
+            "description": "Concrete ways to free up money, aimed at the biggest categories the user controls.",
+        },
+    },
+    "required": ["headline", "can_save", "goals", "ideas"],
+}
+
+
 # The market around the user's investments: broad indexes always, plus Bitcoin
 # or gold when they hold crypto or gold.
 MARKET_INDEXES = (("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq Composite"))
@@ -677,6 +725,149 @@ def holdings_facts(store: Store, service: PriceService, today: date) -> str:
     return "\n".join(lines)
 
 
+SAVINGS_MONTHS = 3  # complete months to average over
+
+
+def savings_facts(store: Store, service: PriceService, today: date) -> str:
+    """Everything the savings check is told: pay, income and spending you
+    control (averaged over recent complete months), what's left over, liquid
+    cash, and what each goal needs per month -- all computed here."""
+    lines: List[str] = [_month_header(month_of(today), today)]
+
+    # ---- pay you told the app about
+    hourly = int(store.get_setting("income_hourly_cents", "0") or 0)
+    hours = float(store.get_setting("income_hours_per_week", "0") or 0)
+    tax = float(store.get_setting("income_tax_pct", "0") or 0)
+    pay_currency = store.get_setting("income_currency", HOME_CURRENCY)
+    take_home_hourly = None
+    estimate = None
+    if hourly and hours:
+        try:
+            rate = service.fx_rate(pay_currency)
+        except PriceUnavailable:
+            rate = None
+        if rate:
+            hourly_usd = round(hourly / rate)
+            estimate = monthly_pay_cents(hourly_usd, hours, tax)
+            # Half a cent rounds up, like everywhere else money is rounded.
+            take_home_hourly = int((Decimal(hourly_usd) * (100 - Decimal(str(tax))) / 100)
+                                   .to_integral_value(rounding=ROUND_HALF_UP))
+            lines.append("")
+            lines.append(
+                f"Your pay: {format_money(hourly_usd)} an hour, about {hours:g} hours a week"
+                + (f", with about {tax:g}% taken out for taxes" if tax else " (before tax)")
+                + f". That's about {format_money(estimate)} a month take-home "
+                  f"({format_money(take_home_hourly)} an hour after tax)."
+            )
+    if estimate is None:
+        lines.append("")
+        lines.append("Your hourly pay isn't set in Settings, so only recorded income is used.")
+
+    # ---- recent complete months: income and spending you control
+    current = month_of(today)
+    months = [shift_month(current, -i) for i in range(1, SAVINGS_MONTHS + 1)]
+    month_totals = dict(store.totals_by_month(Kind.EXPENSE))
+    first = min(month_totals) if month_totals else current
+    months = [m for m in months if m >= first]
+    covered, note = store.covered_categories()
+    if months:
+        income = [sum(c for _, c in store.totals_by_category(Kind.INCOME, month=m)) for m in months]
+        controlled_rows = [
+            {n: c for n, c in store.totals_by_category(Kind.EXPENSE, month=m) if n not in covered} for m in months
+        ]
+        controlled = [sum(r.values()) for r in controlled_rows]
+        avg_income = round(statistics.mean(income))
+        avg_spent = round(statistics.mean(controlled))
+        label = ", ".join(f"{date(int(m[:4]), int(m[5:]), 1):%b} {format_money(v)}" for m, v in zip(reversed(months), reversed(income)))
+        lines.append(f"Income recorded in the last {len(months)} complete month(s): {label}; average {format_money(avg_income)}.")
+        lines.append(
+            f"Spending you control in those months: average {format_money(avg_spent)}"
+            + (f" (costs covered by someone else -- {', '.join(covered)} -- left out)." if covered else ".")
+        )
+        lines.append("")
+        lines.append("Left over each month (income minus spending you control):")
+        lines.append(f"- From recorded income: {format_money(avg_income - avg_spent)} on average")
+        if estimate is not None:
+            lines.append(f"- From your pay estimate: {format_money(estimate - avg_spent)}")
+        totals: Dict[str, int] = {}
+        for row in controlled_rows:
+            for n, c in row.items():
+                totals[n] = totals.get(n, 0) + c
+        biggest = sorted(totals.items(), key=lambda kv: -kv[1])[:4]
+        if biggest:
+            lines.append("Biggest categories you control (average a month): " + ", ".join(
+                f"{n} {format_money(round(c / len(months)))}" for n, c in biggest))
+        surplus = (estimate if estimate is not None else avg_income) - avg_spent
+    else:
+        lines.append("There are no complete months recorded yet to average.")
+        surplus = None
+
+    rules = [r for r in store.recurring_rules() if r.active and r.kind is Kind.EXPENSE and r.category not in covered]
+    if rules:
+        per_year = {Frequency.WEEKLY: 52, Frequency.BIWEEKLY: 26, Frequency.MONTHLY: 12, Frequency.YEARLY: 1}
+        monthly = 0
+        for r in rules:
+            rate = store.fx_rate(r.currency, today)
+            usd = to_home_cents(r.amount_cents, rate) if rate else r.amount_cents
+            monthly += round(usd * per_year[r.frequency] / 12)
+        lines.append(f"Recurring bills you pay: about {format_money(monthly)} a month.")
+
+    # ---- cash now
+    cash = [h for h in store.holdings() if h.asset_type is AssetType.CASH]
+    balances = account_balances(cash, store.account_changes(today))
+    liquid = value_holdings(cash, service.quote, balances, fx=service.fx_rate)
+    lines.append(f"Cash in your accounts right now: {format_money(liquid.total_cents)}.")
+
+    # ---- goals
+    goals = store.goals()
+    lines.append("")
+    if not goals:
+        lines.append("No savings goals set yet.")
+    else:
+        lines.append("Savings goals:")
+        needed = 0
+        for goal in goals:
+            plan = goal_plan(store, service, goal, balances, today)
+            if plan is None:
+                lines.append(f"- {goal.name}: no exchange rate for {goal.currency} right now")
+                continue
+            line = (f"- {goal.name}: {format_money(plan.saved_cents)} of {format_money(plan.target_cents)} saved "
+                    f"({plan.share * 100:.0f}%), {format_money(plan.left_cents)} to go")
+            if goal.target_date:
+                line += f", by {goal.target_date:%b} {goal.target_date.day}, {goal.target_date.year}"
+                if plan.per_month_cents:
+                    needed += plan.per_month_cents
+                    line += f": {format_money(plan.per_month_cents)} a month"
+                    if take_home_hourly:
+                        line += f" (about {plan.per_month_cents / take_home_hourly:.1f} hours of work a month)"
+            else:
+                line += ", no date set"
+            if plan.left_cents == 0:
+                line += " -- reached"
+            lines.append(line)
+        if needed and surplus is not None:
+            share = f"{needed / surplus * 100:.0f}% of what's left over each month" if surplus > 0 else \
+                "more than what's left over each month (nothing is left over on average)"
+            lines.append(f"Goals with dates need {format_money(needed)} a month together: {share}.")
+    return "\n".join(lines)
+
+
+def goal_plan(store: Store, service: PriceService, goal: Any, balances: Dict[int, int], today: date) -> Optional[GoalPlan]:
+    """A goal in US dollars. Progress is the linked account's balance (in its
+    currency) or the amount saved (in the goal's currency)."""
+    try:
+        target = to_home_cents(goal.target_cents, service.fx_rate(goal.currency))
+        if goal.account_id is not None and goal.account_id in balances:
+            account = store.get_holding(goal.account_id)
+            saved = to_home_cents(balances[goal.account_id], service.fx_rate(account.currency))
+        else:
+            saved = to_home_cents(goal.saved_cents, service.fx_rate(goal.currency))
+    except PriceUnavailable:
+        return None
+    # An account can hold more than one goal's worth; progress stops at the target.
+    return GoalPlan(goal.name, target, min(max(saved, 0), target), goal.target_date, today)
+
+
 # ---------------------------------------------------------------- Ollama
 
 
@@ -773,6 +964,18 @@ class OllamaClient:
         content = message.get("content", "")
         return parse_focus_review(content) if focus else parse_review(content)
 
+    def savings_review(self, model: str, facts: str) -> Dict[str, Any]:
+        message = self._chat({
+            "model": model,
+            "format": SAVINGS_SCHEMA,
+            "options": {"temperature": 0.3},
+            "messages": [
+                {"role": "system", "content": SAVINGS_PROMPT},
+                {"role": "user", "content": "How much can I save, and are my goals on track?\n\n" + facts},
+            ],
+        })
+        return parse_sections(message.get("content", ""), {"can_save": 2, "goals": 3, "ideas": 3})
+
     def holdings_review(self, model: str, facts: str) -> Dict[str, Any]:
         message = self._chat({
             "model": model,
@@ -834,6 +1037,20 @@ def parse_focus_review(content: str) -> Review:
         }))
     except (ValueError, KeyError, TypeError) as exc:
         raise AIError("the model's reply wasn't in the expected format; try again") from exc
+
+
+def parse_sections(content: str, limits: Dict[str, int]) -> Dict[str, Any]:
+    """{headline, <section>: [...]} from a reply with list sections, each capped."""
+    try:
+        data = json.loads(content)
+        review: Dict[str, Any] = {"headline": str(data["headline"]).strip()}
+        for key, limit in limits.items():
+            review[key] = _items(data[key])[:limit]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise AIError("the model's reply wasn't in the expected format; try again") from exc
+    if not review["headline"] or not any(review[k] for k in limits):
+        raise AIError("the model's reply was empty; try again")
+    return review
 
 
 def parse_holdings_review(content: str) -> Dict[str, Any]:

@@ -21,6 +21,7 @@ POST   /api/profile                  create the profile
 GET    /api/summary?month=           spent / income / net for one month
 GET    /api/months                   months that have transactions (for pickers)
 GET    /api/categories?kind=         category names, most used first
+GET    /api/categories/suggest?description=   the category you've used before for it
 GET    /api/transactions?month=      transactions, newest first
 POST   /api/transactions             add one
 GET    /api/transactions/{id}        one transaction (+ how many share its description)
@@ -49,6 +50,11 @@ GET    /api/portfolio?period=        investment gains (since buying, over a peri
 POST   /api/ai/holdings              the AI on your investments and the market (not saved)
 GET    /api/caps?month=              monthly spending caps and how much of each is spent
 PUT    /api/caps                     set or remove caps
+GET    /api/goals                    savings goals with progress and what each needs per month
+POST   /api/goals                    add one
+PUT    /api/goals/{id}               change one
+DELETE /api/goals/{id}               remove one
+POST   /api/ai/savings               the AI on how much you can save (not saved)
 GET    /api/transfers                moves between your own accounts
 POST   /api/transfers                record one (converts currencies at that day's rate if needed)
 DELETE /api/transfers/{id}           remove one
@@ -97,10 +103,12 @@ from .analyst import (
     AIUnavailable,
     OllamaClient,
     focus_facts,
+    goal_plan,
     holdings_facts,
     month_facts,
     normalize_url,
     pick_model,
+    savings_facts,
 )
 from .assistant import ask
 from .models import (
@@ -112,6 +120,7 @@ from .models import (
     Holding,
     Kind,
     RecurringRule,
+    SavingsGoal,
     Transaction,
     Transfer,
     cents_to_plain,
@@ -227,6 +236,7 @@ class QuestionIn(BaseModel):
     history: List[ChatTurn] = Field(default_factory=list, max_length=20)
     focus: Optional[FocusIn] = Field(None, description="follow-up on 'AI on these categories'")
     review_month: Optional[str] = Field(None, description="follow-up on the saved review of this month (YYYY-MM)")
+    savings: bool = Field(False, description="follow-up on the savings check")
 
 
 class ImportMapping(BaseModel):
@@ -261,6 +271,20 @@ class SettingsIn(BaseModel):
     covered_note: Optional[str] = Field(None, max_length=120)
     display_currency: Optional[str] = Field(None, max_length=3)
     travel_account_id: Optional[int] = Field(None, description="travel mode's account; null turns it off")
+    # Your pay, for the savings check. "" clears the hourly rate.
+    income_hourly: Optional[str] = Field(None, max_length=30, description="pay per hour, e.g. '18.50'")
+    income_currency: Optional[str] = Field(None, max_length=3)
+    income_hours_per_week: Optional[float] = Field(None, ge=0, le=100)
+    income_tax_pct: Optional[float] = Field(None, ge=0, le=60)
+
+
+class GoalIn(BaseModel):
+    name: str = Field(max_length=80)
+    target: str = Field(max_length=30, description="how much, in ``currency``")
+    currency: str = Field("USD", max_length=3)
+    target_date: Optional[str] = Field(None, description="YYYY-MM-DD; blank = no date")
+    account_id: Optional[int] = Field(None, description="progress = this cash account's balance")
+    saved: Optional[str] = Field(None, max_length=30, description="saved so far, when no account is linked")
 
 
 class CapIn(BaseModel):
@@ -500,6 +524,7 @@ def create_app(
             "travel_account_id": _travel_account(store),
             "currencies": [{"code": code, "symbol": symbol, "decimals": decimals}
                            for code, (symbol, decimals) in CURRENCIES.items()],
+            "income": _income_json(store),
         }
 
     @app.get("/api/settings")
@@ -535,6 +560,18 @@ def create_app(
                 raise HTTPException(400, str(exc)) from None
         if "travel_account_id" in body.model_fields_set:
             store.set_setting("travel_account_id", str(_account_or_400(store, body.travel_account_id) or ""))
+        try:
+            if body.income_hourly is not None:
+                text = body.income_hourly.strip()
+                store.set_setting("income_hourly_cents", str(parse_money(text)) if text else "")
+            if body.income_currency is not None:
+                store.set_setting("income_currency", check_currency(body.income_currency))
+            if body.income_hours_per_week is not None:
+                store.set_setting("income_hours_per_week", f"{body.income_hours_per_week:g}")
+            if body.income_tax_pct is not None:
+                store.set_setting("income_tax_pct", f"{body.income_tax_pct:g}")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
         return settings_json(store)
 
     @app.get("/api/fx")
@@ -660,6 +697,8 @@ def create_app(
             if saved is None:
                 raise HTTPException(400, "There's no saved review for that month yet.")
             context = saved["facts"]
+        elif body.savings:
+            context = savings_facts(store, price_service(store), today())
         client = ai_client(store)
         try:
             model = pick_model(client.models(), store.get_setting("ai_model", ""))
@@ -752,6 +791,13 @@ def create_app(
         found |= {m for m, _ in store.totals_by_month(Kind.INCOME)}
         found.add(month_of(today()))
         return sorted(found, reverse=True)
+
+    @app.get("/api/categories/suggest")
+    def suggest_category(
+        description: str = Query(..., max_length=200), kind: Kind = Kind.EXPENSE, store: Store = Depends(get_store)
+    ) -> Dict[str, Any]:
+        """The category you've used before for a description like this one."""
+        return store.suggest_category(description, kind) or {"category": None}
 
     @app.get("/api/categories")
     def categories(kind: Kind = Kind.EXPENSE, store: Store = Depends(get_store)) -> List[str]:
@@ -1202,6 +1248,91 @@ def create_app(
             raise HTTPException(400, str(exc)) from None
         return caps_json(store, month_of(today()))
 
+    # ---------------------------------------------------- savings goals
+
+    def goal_json(store: Store, goal: SavingsGoal) -> Dict[str, Any]:
+        service = price_service(store)
+        cash = [h for h in store.holdings() if h.asset_type is AssetType.CASH]
+        balances = portfolio.account_balances(cash, store.account_changes(today()))
+        plan = goal_plan(store, service, goal, balances, today())
+        account = store.get_holding(goal.account_id) if goal.account_id is not None else None
+        return {
+            "id": goal.id,
+            "name": goal.name,
+            "currency": goal.currency,
+            "target_set_cents": goal.target_cents,  # as set, in ``currency``
+            "saved_set_cents": goal.saved_cents,    # as set, when no account is linked
+            "target_date": goal.target_date.isoformat() if goal.target_date else None,
+            "account_id": goal.account_id,
+            "account_name": account.name if account else None,
+            # In US dollars (null if an exchange rate is missing):
+            "target_cents": plan.target_cents if plan else None,
+            "saved_cents": plan.saved_cents if plan else None,
+            "left_cents": plan.left_cents if plan else None,
+            "share": plan.share if plan else None,
+            "per_month_cents": plan.per_month_cents if plan else None,
+            "months_left": plan.months_left if plan else None,
+        }
+
+    def build_goal(store: Store, body: GoalIn) -> SavingsGoal:
+        try:
+            date_text = (body.target_date or "").strip()
+            saved_text = (body.saved or "").strip()
+            return SavingsGoal(
+                name=body.name.strip(),
+                target_cents=parse_money(body.target),
+                currency=check_currency(body.currency),
+                target_date=parse_date(date_text, today=today(), allow_future=True) if date_text else None,
+                account_id=_account_or_400(store, body.account_id),
+                saved_cents=parse_money(saved_text) if saved_text else 0,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @app.get("/api/goals")
+    def list_goals(store: Store = Depends(get_store)) -> List[Dict[str, Any]]:
+        return [goal_json(store, g) for g in store.goals()]
+
+    @app.post("/api/goals", status_code=201)
+    def add_goal(body: GoalIn, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        goal_id = store.add_goal(build_goal(store, body))
+        return goal_json(store, store.get_goal(goal_id))
+
+    @app.put("/api/goals/{goal_id}")
+    def update_goal(goal_id: int, body: GoalIn, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        if store.get_goal(goal_id) is None:
+            raise HTTPException(404, f"no goal with id {goal_id}")
+        store.update_goal(goal_id, build_goal(store, body))
+        return goal_json(store, store.get_goal(goal_id))
+
+    @app.delete("/api/goals/{goal_id}", status_code=204)
+    def delete_goal(goal_id: int, store: Store = Depends(get_store)) -> Response:
+        if not store.delete_goal(goal_id):
+            raise HTTPException(404, f"no goal with id {goal_id}")
+        return Response(status_code=204)
+
+    @app.post("/api/ai/savings")
+    def savings_check(store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """How much you can save and whether your goals are on track, from your
+        pay, income, spending you control, and goals. Not saved."""
+        client = ai_client(store)
+        try:
+            model = pick_model(client.models(), store.get_setting("ai_model", ""))
+            if model is None:
+                raise HTTPException(409, "Ollama has no models installed. On the PC, run: ollama pull qwen3:14b")
+            facts = savings_facts(store, price_service(store), today())
+            review = client.savings_review(model, facts)
+        except AIUnavailable:
+            raise HTTPException(503, "Your PC is offline, or Ollama isn't running on it.") from None
+        except AIError as exc:
+            raise HTTPException(502, f"The model had a problem: {exc}") from None
+        return {
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+            "model": model,
+            "review": review,
+            "facts": facts,
+        }
+
     # ---------------------------------------------------- transfers
 
     @app.get("/api/transfers")
@@ -1549,6 +1680,20 @@ def _transfer_json(t: Transfer, accounts: Dict[int, Holding]) -> Dict[str, Any]:
         "to_currency": target.currency if target else HOME_CURRENCY,
         "to_cents": t.to_cents,
         "note": t.note,
+    }
+
+
+def _income_json(store: Store) -> Dict[str, Any]:
+    """Your pay as set in Settings, and the take-home month it works out to (in its currency)."""
+    hourly = int(store.get_setting("income_hourly_cents", "") or 0) or None
+    hours = float(store.get_setting("income_hours_per_week", "") or 0) or None
+    tax = float(store.get_setting("income_tax_pct", "") or 0)
+    return {
+        "hourly_cents": hourly,
+        "currency": store.get_setting("income_currency", HOME_CURRENCY),
+        "hours_per_week": hours,
+        "tax_pct": tax,
+        "monthly_cents": reports.monthly_pay_cents(hourly, hours, tax) if hourly and hours else None,
     }
 
 

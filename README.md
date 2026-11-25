@@ -271,6 +271,10 @@ Every endpoint except `/api/auth/...` requires a signed-in session.
 | GET | `/api/quotes/{symbol}` | live price (used to check tickers) |
 | GET | `/api/net-worth` | value everything (cash accounts with their linked transactions), liquid total; records today's snapshot |
 | GET | `/api/portfolio?period=` | investment gains since buying, over 1W–All, and today, plus the chart |
+| GET | `/api/categories/suggest?description=` | the category you've used before for a description |
+| GET / POST | `/api/goals` | savings goals with progress and what each needs per month / add one |
+| PUT / DELETE | `/api/goals/{id}` | change / remove one |
+| POST | `/api/ai/savings` | how much you can save and whether goals are on track (not saved) |
 | GET / PUT | `/api/caps?month=` | spending caps with how much of each is spent / set or remove caps |
 | GET / POST | `/api/transfers` | moves between your own accounts / record one (converting currencies if needed) |
 | DELETE | `/api/transfers/{id}` | remove one |
@@ -386,6 +390,41 @@ well as color: **On track**, **Close to the cap** (90% or more), or **Over by
 $X**. For a cap that's close or over, **Why?** ticks just that category and has
 the AI look at it. The AI's fact sheets include the caps ("$260.91 of a
 $200.00 monthly cap, over by $60.91"), and so does the monthly review.
+
+### Savings goals and the AI savings check
+
+**Goals.** On the Home screen, **Savings goals → Add goal** takes a name, an
+amount (in your display currency), and an optional date. Progress comes from a
+linked cash account's balance (a savings account just for the goal works
+best), or from an amount you update yourself. Each goal shows how far along it
+is and, with a date, how much to put aside each month to make it.
+
+**Your pay.** In **Settings → Your pay**, enter your hourly pay, the hours you
+normally work a week, and roughly what's taken out for taxes. The app works out
+your take-home month (hourly × hours × 52 weeks ÷ 12, minus tax).
+
+**AI savings check.** "How much can I save?" gives the model a fact sheet, all
+computed in Python:
+
+- your pay estimate, and the income you actually recorded in the last three
+  complete months
+- what you spent that's under your control (covered costs left out)
+- what's left over each month, and your recurring bills
+- your cash right now
+- each goal's progress and monthly need, including in hours of work at your
+  after-tax pay
+
+It says what you can realistically save, whether each goal is on track, and
+where to free up money. It doesn't recommend investments. Follow-up questions
+work like the other AI panels.
+
+### Category suggestions
+
+When you add a transaction, the category fills itself in from what you've used
+before. A past transaction with the same description wins. Failing that, one
+that shares a word with it counts, so "Boba Guys" finds your earlier "Boba". A
+note says where the suggestion came from. Once you type or pick a category
+yourself, it stays.
 
 ### Your money: bank accounts and investments
 
@@ -582,10 +621,10 @@ paused. Stopping a rule keeps the transactions it already created.
       over any period; AI on investments and the market
 - [x] Accounts in more than one currency (NT$), transfers, display currency, travel mode
 - [x] Monthly spending caps per category, with the AI on any that go over
+- [x] Savings goals, your pay, and an AI savings check; category suggestions
 - [ ] Next: move to an always-on Raspberry Pi ([plan](docs/raspberry-pi.md))
 - [ ] Later: Wake-on-LAN to turn the PC on from the app
 
-Ideas not built yet: savings goals, credit cards and loans as their own
-accounts (what you owe), subscription detection, a cash-flow forecast,
-split and shared expenses, tags, rules for imports, and separate purchase lots
-per investment.
+Ideas not built yet: subscription detection, a cash-flow forecast, split and
+shared expenses, tags, rules for imports, phone notifications, a calendar view
+of spending, and separate purchase lots per investment.

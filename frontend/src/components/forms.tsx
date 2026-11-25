@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { api, type AssetType, type Frequency, type Kind, type Quote } from "../api";
 import { ASSET_TYPES, currencySymbol, dateLabel, FREQUENCIES, frequencyText, moneyIn, todayIso } from "../format";
 import { useAsync } from "../hooks";
@@ -44,6 +44,35 @@ function EntryForm({ kind, onSaved, version }: { kind: Kind; onSaved: () => void
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState("");
+  // The category you've used before for this description fills itself in;
+  // once you type or pick one yourself, yours wins.
+  const [picked, setPicked] = useState(false);
+  const [suggested, setSuggested] = useState<{ count: number; match?: string } | null>(null);
+  const chooseCategory = (value: string) => {
+    setCategory(value);
+    setPicked(true);
+    setSuggested(null);
+  };
+  useEffect(() => {
+    const text = description.trim();
+    if (picked || text.length < 2) return;
+    const timer = setTimeout(() => {
+      api.suggestCategory(text, kind).then(
+        (s) => {
+          if (s.category) {
+            setCategory(s.category);
+            setSuggested({ count: s.count ?? 1, match: s.match });
+          } else if (suggested) {
+            setCategory(""); // it was only our guess; don't leave a wrong one behind
+            setSuggested(null);
+          }
+        },
+        () => {},
+      );
+    }, 250);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [description, kind, picked]);
   const [date, setDate] = useState(todayIso());
   const [repeat, setRepeat] = useState<Frequency | "">("");
   const [busy, setBusy] = useState(false);
@@ -89,6 +118,8 @@ function EntryForm({ kind, onSaved, version }: { kind: Kind; onSaved: () => void
       setAmount("");
       rememberAccount(accountId);
       setAccountChoice(undefined);
+      setPicked(false); // the next description gets a fresh suggestion
+      setSuggested(null);
       onSaved();
     } catch (error) {
       setMessage({ text: (error as Error).message, error: true });
@@ -147,7 +178,13 @@ function EntryForm({ kind, onSaved, version }: { kind: Kind; onSaved: () => void
       </label>
       <label className="field">
         <span>Category</span>
-        <input type="text" list={listId} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Pick or type a new one" required />
+        <input type="text" list={listId} value={category} onChange={(e) => chooseCategory(e.target.value)} placeholder="Pick or type a new one" required />
+        {suggested && category && (
+          <span className="hint suggested">
+            ✨ Filled in from {suggested.count} past{" "}
+            {suggested.match === "same" ? `“${description.trim()}”` : "similar"} transaction{suggested.count === 1 ? "" : "s"}
+          </span>
+        )}
         <datalist id={listId}>
           {categories.data?.map((c) => <option key={c} value={c} />)}
         </datalist>
@@ -155,7 +192,7 @@ function EntryForm({ kind, onSaved, version }: { kind: Kind; onSaved: () => void
       {!!categories.data?.length && (
         <div className="chips" aria-label="Recent categories">
           {categories.data.slice(0, 8).map((c) => (
-            <button key={c} type="button" className="chip" onClick={() => setCategory(c)}>
+            <button key={c} type="button" className="chip" onClick={() => chooseCategory(c)}>
               {c}
             </button>
           ))}

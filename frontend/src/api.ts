@@ -43,6 +43,48 @@ export interface Settings {
   display_currency: string; // amounts are shown in this (USD by default)
   travel_account_id: number | null; // travel mode: new transactions default to this account
   currencies: { code: string; symbol: string; decimals: number }[];
+  income: Income;
+}
+
+/** Your pay, for the savings check. monthly_cents is take-home, in ``currency``. */
+export interface Income {
+  hourly_cents: number | null;
+  currency: string;
+  hours_per_week: number | null;
+  tax_pct: number;
+  monthly_cents: number | null;
+}
+
+/** A savings goal. Amounts are USD cents unless they say "set" (as entered, in ``currency``). */
+export interface Goal {
+  id: number;
+  name: string;
+  currency: string;
+  target_set_cents: number;
+  saved_set_cents: number;
+  target_date: string | null;
+  account_id: number | null; // progress = this account's balance
+  account_name: string | null;
+  target_cents: number | null;
+  saved_cents: number | null;
+  left_cents: number | null;
+  share: number | null;
+  per_month_cents: number | null; // to reach it by its date
+  months_left: number | null;
+}
+export interface GoalInput {
+  name: string;
+  target: string;
+  currency: string;
+  target_date?: string;
+  account_id?: number | null;
+  saved?: string;
+}
+export interface SavingsCheck {
+  created_at: string;
+  model: string;
+  review: { headline: string; can_save: string[]; goals: string[]; ideas: string[] };
+  facts: string;
 }
 
 export interface AiStatus {
@@ -111,7 +153,7 @@ export interface ReviewText {
 }
 
 /** What a follow-up question is about: the server uses that analysis's facts as context. */
-export type AskAbout = { focus?: { month: string; categories: string[] }; review_month?: string };
+export type AskAbout = { focus?: { month: string; categories: string[] }; review_month?: string; savings?: boolean };
 
 export interface SavedReview {
   month: string;
@@ -407,7 +449,9 @@ export const api = {
   settings: () => request<Settings>("/api/settings"),
   saveSettings: (
     body: Partial<Pick<Settings,
-      "theme" | "ai_url" | "ai_model" | "covered_categories" | "covered_note" | "display_currency" | "travel_account_id">>,
+      "theme" | "ai_url" | "ai_model" | "covered_categories" | "covered_note" | "display_currency" | "travel_account_id">> & {
+      income_hourly?: string; income_currency?: string; income_hours_per_week?: number; income_tax_pct?: number;
+    },
   ) =>
     request<Settings>("/api/settings", json("PUT", body)),
 
@@ -476,6 +520,14 @@ export const api = {
   holdingsReview: () => request<HoldingsReview>("/api/ai/holdings", { method: "POST" }),
   fx: (currency: string) => request<{ currency: string; rate: number }>(`/api/fx${query({ currency })}`),
   caps: (month: string) => request<Caps>(`/api/caps${query({ month })}`),
+  suggestCategory: (description: string, kind: Kind) =>
+    request<{ category: string | null; count?: number; match?: "same" | "similar" }>(
+      `/api/categories/suggest${query({ description, kind })}`),
+  goals: () => request<Goal[]>("/api/goals"),
+  addGoal: (body: GoalInput) => request<Goal>("/api/goals", json("POST", body)),
+  updateGoal: (id: number, body: GoalInput) => request<Goal>(`/api/goals/${id}`, json("PUT", body)),
+  deleteGoal: (id: number) => request<void>(`/api/goals/${id}`, { method: "DELETE" }),
+  savingsCheck: () => request<SavingsCheck>("/api/ai/savings", { method: "POST" }),
   saveCaps: (caps: { category: string; amount: string | null }[], currency: string) =>
     request<Caps>("/api/caps", json("PUT", { caps, currency })),
   transfers: () => request<TransferItem[]>("/api/transfers"),

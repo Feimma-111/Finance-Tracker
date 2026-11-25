@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api, BACKUP_DOWNLOAD_URL, CSV_EXPORT_URL, LOCKED_EVENT, type AiStatus, type Settings as SettingsData } from "../api";
 import { useCashAccounts } from "../components/AccountField";
+import { currencySymbol, moneyIn } from "../format";
 import { CsvImport } from "../components/CsvImport";
 import { useAsync, type ThemeChoice } from "../hooks";
 
@@ -280,6 +281,71 @@ const THEMES: { value: ThemeChoice; label: string }[] = [
   { value: "dark", label: "Dark" },
 ];
 
+/** Your pay, for the AI savings check: per hour, hours a week, and roughly how much tax comes out. */
+function PaySettings({ settings, onSaved }: { settings: SettingsData; onSaved: (s: SettingsData) => void }) {
+  const income = settings.income;
+  const currency = income.hourly_cents ? income.currency : settings.display_currency;
+  const whole = currency === "TWD" || currency === "JPY" || currency === "KRW";
+  const [hourly, setHourly] = useState(income.hourly_cents ? (income.hourly_cents / 100).toFixed(whole ? 0 : 2) : "");
+  const [hours, setHours] = useState(income.hours_per_week ? String(income.hours_per_week) : "");
+  const [tax, setTax] = useState(income.tax_pct ? String(income.tax_pct) : "");
+  const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    setMessage(null);
+    try {
+      onSaved(await api.saveSettings({
+        income_hourly: hourly.trim(),
+        income_currency: currency,
+        income_hours_per_week: Number(hours || 0),
+        income_tax_pct: Number(tax || 0),
+      }));
+      setMessage({ text: "Saved.", error: false });
+    } catch (e) {
+      setMessage({ text: (e as Error).message, error: true });
+    }
+  }
+
+  return (
+    <section className="setting-row">
+      <h3>Your pay</h3>
+      <span className="hint">
+        Used by the AI savings check on the Home screen, to work out what you can save and what each goal costs in
+        hours of work. It's only stored in your own database.
+      </span>
+      <form className="form" onSubmit={save} style={{ maxWidth: 420 }}>
+        <div className="field-row">
+          <label className="field">
+            <span>Pay per hour</span>
+            <div className="money-input">
+              <i>{currencySymbol(currency)}</i>
+              <input type="text" inputMode="decimal" value={hourly} onChange={(e) => setHourly(e.target.value)} placeholder="e.g. 18.50" />
+            </div>
+          </label>
+          <label className="field">
+            <span>Hours a week, normally</span>
+            <input type="number" inputMode="decimal" min={0} max={100} step="0.5" value={hours} onChange={(e) => setHours(e.target.value)} placeholder="e.g. 20" />
+          </label>
+        </div>
+        <label className="field" style={{ maxWidth: 200 }}>
+          <span>Taken out for taxes (%)</span>
+          <input type="number" inputMode="decimal" min={0} max={60} step="0.5" value={tax} onChange={(e) => setTax(e.target.value)} placeholder="optional" />
+        </label>
+        {income.monthly_cents && (
+          <span className="hint">
+            About {moneyIn(income.monthly_cents, income.currency)} a month take-home (hourly × hours × 52 weeks ÷ 12, minus tax).
+          </span>
+        )}
+        <div className="inline-form" style={{ alignItems: "center" }}>
+          <button className="btn" type="submit">Save</button>
+          {message && <span className={`message ${message.error ? "error" : "success"}`}>{message.text}</span>}
+        </div>
+      </form>
+    </section>
+  );
+}
+
 /** Display currency (everything is converted at today's rate) and travel mode. */
 function MoneySettings({ settings, onSaved }: { settings: SettingsData; onSaved: (s: SettingsData) => void }) {
   const accounts = useCashAccounts();
@@ -396,6 +462,7 @@ export function Settings({
         {settings && <AiSettings settings={settings} onSaved={onSettings} />}
         {settings && <CoveredSettings settings={settings} onSaved={onSettings} />}
         {settings && <MoneySettings settings={settings} onSaved={onSettings} />}
+        {settings && <PaySettings settings={settings} onSaved={onSettings} />}
 
         <CsvImport onImported={onDataChanged} />
 

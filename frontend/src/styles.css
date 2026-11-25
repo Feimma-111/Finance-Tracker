@@ -902,3 +902,23 @@ select:focus { box-shadow: inset 0 0 0 2px var(--accent); }
 .cap-editor { display: grid; gap: 8px; max-height: 50vh; overflow-y: auto; padding: 2px; }
 .cap-edit-row { display: grid; grid-template-columns: auto minmax(0, 1fr) 140px; gap: 10px; align-items: center; font-size: 14px; }
 .card { scroll-margin-top: 84px; }
+
+/* ==================================================================== savings goals */
+.goal-list { list-style: none; margin: 0 0 6px; padding: 0; display: grid; gap: 4px; }
+.goal {
+  width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; align-items: start;
+  padding: 10px 8px; border: none; border-radius: 12px; background: transparent; text-align: left; cursor: pointer;
+}
+.goal:hover { background: var(--surface-2); }
+.goal-icon {
+  width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; font-size: 16px;
+  background: var(--accent-tint);
+}
+.goal-main { display: grid; gap: 6px; min-width: 0; }
+.goal-top, .goal-bottom { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 14px; }
+.goal-bottom { font-size: 13px; color: var(--text-secondary); flex-wrap: wrap; }
+.goal-track { position: relative; height: 10px; border-radius: 5px; background: var(--fill-strong); overflow: hidden; }
+.goal-fill { position: absolute; inset: 0 auto 0 0; border-radius: 5px; background: var(--accent); }
+.goal.done .goal-fill { background: var(--positive); }
+.savings-check { display: grid; gap: 10px; margin-top: 12px; padding-top: 16px; border-top: 1px solid var(--border); }
+.suggested { color: var(--accent); }

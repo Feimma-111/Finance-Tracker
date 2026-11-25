@@ -216,3 +216,35 @@ class UpgradeTests(unittest.TestCase):
                 store.close()
             # The upgrade made a safety backup first.
             self.assertTrue(os.listdir(os.path.join(folder, "backups")))
+
+
+class SuggestCategoryTests(unittest.TestCase):
+    def setUp(self):
+        self.store = Store(":memory:")
+        add = lambda desc, cat, kind=Kind.EXPENSE, day=1: self.store.add_transaction(  # noqa: E731
+            Transaction(desc, 500, cat, date(2026, 11, day), kind))
+        add("Boba", "Food", day=1)
+        add("boba ", "Food", day=2)
+        add("Boba", "Treats", day=3)       # less common
+        add("Uber to airport", "Transport")
+        add("Paycheck", "Salary", Kind.INCOME)
+        add("Bobatime cafe", "Coffee")    # contains "boba" inside a word, not as one
+
+    def tearDown(self):
+        self.store.close()
+
+    def test_same_description_wins(self):
+        self.assertEqual(self.store.suggest_category("  BOBA "),
+                         {"category": "Food", "count": 2, "match": "same"})
+
+    def test_a_shared_word(self):
+        self.assertEqual(self.store.suggest_category("Boba Guys")["category"], "Food")
+        self.assertEqual(self.store.suggest_category("uber home"),
+                         {"category": "Transport", "count": 1, "match": "similar"})
+
+    def test_no_suggestion(self):
+        self.assertIsNone(self.store.suggest_category("Dentist"))
+        self.assertIsNone(self.store.suggest_category("b"))
+        self.assertIsNone(self.store.suggest_category("Paycheck"))  # only used for income
+        self.assertEqual(self.store.suggest_category("paycheck", Kind.INCOME)["category"], "Salary")
+        self.assertIsNone(self.store.suggest_category("50% off"))  # wildcards don't match everything

@@ -227,6 +227,28 @@ class Transfer:
             raise ValueError("pick two different accounts")
 
 
+@dataclass(frozen=True)
+class SavingsGoal:
+    """Something you're saving for. Progress is a cash account's balance (when
+    ``account_id`` is set) or the amount you say you've put aside."""
+
+    name: str
+    target_cents: int
+    currency: str = HOME_CURRENCY
+    target_date: Optional[date] = None
+    account_id: Optional[int] = None
+    saved_cents: int = 0  # in ``currency``; used when no account is linked
+    id: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("give the goal a name")
+        if self.target_cents <= 0:
+            raise ValueError("the goal needs an amount more than zero")
+        if self.saved_cents < 0:
+            raise ValueError("the amount saved can't be negative")
+
+
 def format_amount(cents: int, currency: str = HOME_CURRENCY) -> str:
     """format_money for any currency: 35000 TWD -> 'NT$350'."""
     if currency == HOME_CURRENCY:

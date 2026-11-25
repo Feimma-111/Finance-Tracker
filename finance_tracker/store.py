@@ -25,6 +25,7 @@ from .models import (
     Holding,
     Kind,
     RecurringRule,
+    SavingsGoal,
     Transaction,
     Transfer,
     fx_symbol,
@@ -192,7 +193,21 @@ CREATE TABLE category_caps (
 );
 """
 
-MIGRATIONS: Tuple[str, ...] = (SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7)
+# Version 8: savings goals.
+SCHEMA_V8 = """
+CREATE TABLE savings_goals (
+    id            INTEGER PRIMARY KEY,
+    name          TEXT NOT NULL,
+    target_cents  INTEGER NOT NULL CHECK (target_cents > 0),
+    currency      TEXT NOT NULL DEFAULT 'USD',
+    target_date   TEXT,                                         -- YYYY-MM-DD, optional
+    account_id    INTEGER REFERENCES holdings(id) ON DELETE SET NULL,  -- progress = its balance
+    saved_cents   INTEGER NOT NULL DEFAULT 0 CHECK (saved_cents >= 0),  -- progress otherwise
+    created_at    TEXT NOT NULL
+);
+"""
+
+MIGRATIONS: Tuple[str, ...] = (SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8)
 
 # Safety valve: never create more than this many transactions in one catch-up.
 MAX_CATCH_UP = 1000
@@ -264,6 +279,48 @@ class Store:
 
     def set_setting(self, name: str, value: str) -> None:
         self.set_meta(f"setting:{name}", value)
+
+    def suggest_category(self, description: str, kind: Kind = Kind.EXPENSE) -> Optional[Dict[str, Any]]:
+        """The category you've used before for this description.
+
+        First, past transactions with the same description (ignoring case and
+        spaces) -- their most common category. Failing that, ones whose
+        description shares a word with it ("Boba Guys" finds "Boba"). Returns
+        {category, count, match: "same" | "similar"}, or None.
+        """
+        text = " ".join(description.lower().split())
+        if len(text) < 2:
+            return None
+        same = self.conn.execute(
+            """
+            SELECT c.name, COUNT(*) AS uses FROM transactions t JOIN categories c ON c.id = t.category_id
+            WHERE lower(trim(t.description)) = ? AND t.kind = ?
+            GROUP BY c.id ORDER BY uses DESC, MAX(t.occurred_on) DESC LIMIT 1
+            """,
+            (text, kind.value),
+        ).fetchone()
+        if same:
+            return {"category": same["name"], "count": same["uses"], "match": "same"}
+        # Whole words of 3+ letters, longest first; LIKE's wildcards are escaped.
+        words = sorted({w for w in text.replace("'", " ").split() if len(w) >= 3 and w.isalnum()}, key=len, reverse=True)
+        for word in words[:3]:
+            pattern = "%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            rows = self.conn.execute(
+                """
+                SELECT c.name, t.description FROM transactions t JOIN categories c ON c.id = t.category_id
+                WHERE t.kind = ? AND lower(t.description) LIKE ? ESCAPE '\\'
+                ORDER BY t.occurred_on DESC LIMIT 200
+                """,
+                (kind.value, pattern),
+            ).fetchall()
+            counts: Dict[str, int] = {}
+            for row in rows:  # LIKE matches inside words too; keep whole-word matches only
+                if word in row["description"].lower().replace("'", " ").split():
+                    counts[row["name"]] = counts.get(row["name"], 0) + 1
+            if counts:
+                name = max(counts, key=lambda n: counts[n])
+                return {"category": name, "count": counts[name], "match": "similar"}
+        return None
 
     def caps(self) -> List[Tuple[str, int, str]]:
         """[(category, cap_cents, currency)] -- monthly spending caps, by name."""
@@ -1115,6 +1172,51 @@ class Store:
         items.sort(key=lambda i: (i["date"], i["counted"], i["id"]), reverse=True)
         return items[:limit]
 
+    # ---------------------------------------------------------- savings goals
+
+    def add_goal(self, goal: SavingsGoal) -> int:
+        with self.conn:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO savings_goals (name, target_cents, currency, target_date, account_id, saved_cents,
+                                           created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (goal.name.strip(), goal.target_cents, goal.currency,
+                 goal.target_date.isoformat() if goal.target_date else None, goal.account_id, goal.saved_cents,
+                 _utc_now()),
+            )
+        return cursor.lastrowid
+
+    def goals(self) -> List[SavingsGoal]:
+        rows = self.conn.execute(
+            "SELECT * FROM savings_goals ORDER BY target_date IS NULL, target_date, id"
+        )
+        return [_row_to_goal(row) for row in rows]
+
+    def get_goal(self, goal_id: int) -> Optional[SavingsGoal]:
+        row = self.conn.execute("SELECT * FROM savings_goals WHERE id = ?", (goal_id,)).fetchone()
+        return _row_to_goal(row) if row else None
+
+    def update_goal(self, goal_id: int, goal: SavingsGoal) -> bool:
+        with self.conn:
+            cursor = self.conn.execute(
+                """
+                UPDATE savings_goals SET name = ?, target_cents = ?, currency = ?, target_date = ?,
+                       account_id = ?, saved_cents = ?
+                WHERE id = ?
+                """,
+                (goal.name.strip(), goal.target_cents, goal.currency,
+                 goal.target_date.isoformat() if goal.target_date else None, goal.account_id, goal.saved_cents,
+                 goal_id),
+            )
+        return cursor.rowcount > 0
+
+    def delete_goal(self, goal_id: int) -> bool:
+        with self.conn:
+            cursor = self.conn.execute("DELETE FROM savings_goals WHERE id = ?", (goal_id,))
+        return cursor.rowcount > 0
+
     # -------------------------------------------------------------- transfers
 
     def add_transfer(self, transfer: Transfer) -> int:
@@ -1307,6 +1409,18 @@ def _row_to_rule(row: sqlite3.Row) -> RecurringRule:
         active=bool(row["active"]),
         account_id=row["account_id"],
         currency=row["currency"],
+    )
+
+
+def _row_to_goal(row: sqlite3.Row) -> SavingsGoal:
+    return SavingsGoal(
+        id=row["id"],
+        name=row["name"],
+        target_cents=row["target_cents"],
+        currency=row["currency"],
+        target_date=date.fromisoformat(row["target_date"]) if row["target_date"] else None,
+        account_id=row["account_id"],
+        saved_cents=row["saved_cents"],
     )
 
 
