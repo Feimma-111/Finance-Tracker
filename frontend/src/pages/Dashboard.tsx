@@ -11,7 +11,9 @@ import {
   PurchaseBars,
   PurchaseDonut,
 } from "../components/charts";
-import { FocusReview, listNames } from "../components/FocusReview";
+import { CapsCard } from "../components/CapsCard";
+import { analyze, FocusReview, listNames } from "../components/FocusReview";
+import { isOnline } from "../components/AiParts";
 import { TransactionList } from "../components/TransactionList";
 import { Upcoming } from "../components/Upcoming";
 import { currentMonth, dateLabel, money, monthLabel, percent, signedMoney } from "../format";
@@ -159,7 +161,20 @@ export function Dashboard({ version, onChanged }: { version: number; onChanged: 
         <AiReview month={month} version={version} status={ai} />
       </section>
 
-      <section className={`card ${categories.loading && categories.data ? "refreshing" : ""}`} style={{ marginTop: 16 }}>
+      <CapsCard
+        month={month}
+        version={version}
+        categories={allCategories ?? []}
+        onChanged={onChanged}
+        onWhy={(category) => {
+          // Tick just that category, run the AI on it, and show it.
+          choose([category]);
+          if (isOnline(ai.data)) analyze(month, [category]);
+          document.getElementById("spending-by-category")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }}
+      />
+
+      <section id="spending-by-category" className={`card ${categories.loading && categories.data ? "refreshing" : ""}`} style={{ marginTop: 16 }}>
         <div className="card-head">
           <h2 className="card-title">Spending by category</h2>
           <span className="card-subtitle">

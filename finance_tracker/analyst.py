@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from .models import GOLD_SYMBOL, HOME_CURRENCY, AssetType, Kind, format_amount, format_money, month_of, shift_month
 from .portfolio import Return, account_balances, close_on, combine, holding_returns, period_start
 from .prices import PriceService, PriceUnavailable
-from .reports import group_purchases, value_holdings
+from .reports import cap_statuses, group_purchases, month_share, value_holdings
 from .store import Store
 
 BASELINE_MONTHS = 6
@@ -201,6 +201,19 @@ def _paid(tx: Any) -> str:
     return f" (paid {format_amount(tx.paid_cents, tx.currency)})" if tx.currency != HOME_CURRENCY else ""
 
 
+def _cap_lines(store: Store, month: str, today: date, spent: Dict[str, int], only: Optional[Sequence[str]] = None) -> List[str]:
+    """'- Food: $260.91 of a $200.00 cap (130%), over by $60.91', computed here."""
+    caps = [c for c in store.caps() if only is None or c[0] in only]
+    statuses = cap_statuses(caps, spent, lambda cur: store.fx_rate(cur, today), month_share(month, today.isoformat()))
+    lines = []
+    for c in statuses:
+        state = (f"over by {format_money(-c.left_cents)}" if c.status == "over"
+                 else f"{format_money(c.left_cents)} left" + (" (close to the cap)" if c.status == "near" else ""))
+        lines.append(f"- {c.category}: {format_money(c.spent_cents)} of a {format_money(c.cap_cents)} monthly cap "
+                     f"({c.share * 100:.0f}%), {state}")
+    return lines
+
+
 def month_facts(store: Store, month: str, today: date) -> str:
     """Everything the model is told about ``month``, as plain text."""
     lines: List[str] = [_month_header(month, today)]
@@ -276,6 +289,12 @@ def month_facts(store: Store, month: str, today: date) -> str:
             lines.append("Spending by category:")
             for name, cents in spent_rows:
                 lines.append(f"- {name}: {format_money(cents)} ({cents / spent * 100:.0f}% of spending){tag(name)}")
+
+    caps = _cap_lines(store, month, today, dict(spent_rows))
+    if caps:
+        lines.append("")
+        lines.append("Spending caps you set (worked out by the app):")
+        lines.extend(caps)
 
     expenses = [t for t in store.transactions(month=month) if t.kind is Kind.EXPENSE]
     if expenses:
@@ -374,6 +393,10 @@ def focus_facts(store: Store, month: str, categories: Sequence[str], today: date
     spent = sum(picked.values())
     all_spent = sum(month_rows.values())
     lines.append(f"Categories you asked about: {', '.join(names)}")
+    caps = _cap_lines(store, month, today, picked, only=names)
+    if caps:
+        lines.append("Spending caps you set for these (worked out by the app):")
+        lines.extend(caps)
 
     covered, note = store.covered_categories()
     covered_here = [name for name in names if name in set(covered)]

@@ -6,6 +6,7 @@ reusable by a future web dashboard (Phase 4) or AI summary (Phase 5).
 
 from __future__ import annotations
 
+import calendar
 import statistics
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
@@ -37,6 +38,64 @@ def group_purchases(transactions: Sequence[Transaction]) -> List[PurchaseGroup]:
         shown.setdefault(key, " ".join(tx.description.split()))
     groups = [PurchaseGroup(shown[key], key[1], len(a), sum(a)) for key, a in amounts.items()]
     return sorted(groups, key=lambda g: (-g.total_cents, g.description.lower()))
+
+
+# ------------------------------------------------------------- spending caps
+
+NEAR_CAP = 0.9  # "close to the cap" from 90% of it
+
+
+@dataclass(frozen=True)
+class CapStatus:
+    category: str
+    cap_cents: int          # in US dollars, at today's rate if it was set in another currency
+    spent_cents: int
+    month_share: float      # how much of the month has gone: 1.0 for a finished month
+
+    @property
+    def share(self) -> float:
+        return self.spent_cents / self.cap_cents
+
+    @property
+    def left_cents(self) -> int:
+        return self.cap_cents - self.spent_cents  # negative when over
+
+    @property
+    def status(self) -> str:
+        """'over', 'near' (90%+ of the cap), or 'ok'."""
+        if self.spent_cents > self.cap_cents:
+            return "over"
+        return "near" if self.share >= NEAR_CAP else "ok"
+
+
+def month_share(month: str, today_iso: str) -> float:
+    """How much of ``month`` has gone by ``today``: 0 for the future, 1 once it's over."""
+    year, mon = (int(p) for p in month.split("-"))
+    days = calendar.monthrange(year, mon)[1]
+    current = today_iso[:7]
+    if month < current:
+        return 1.0
+    if month > current:
+        return 0.0
+    return int(today_iso[8:10]) / days
+
+
+def cap_statuses(
+    caps: Sequence[Tuple[str, int, str]],
+    spent: Dict[str, int],
+    rate: Callable[[str], Optional[float]],
+    share: float,
+) -> List[CapStatus]:
+    """Each cap against the month's spending (``spent`` is USD cents by
+    category), most used first. ``rate(currency)`` converts caps set in
+    another currency; a cap with no rate available is left out."""
+    out = []
+    for name, cents, currency in caps:
+        units_per_dollar = rate(currency)
+        if not units_per_dollar:
+            continue
+        out.append(CapStatus(name, to_home_cents(cents, units_per_dollar), spent.get(name, 0), share))
+    return sorted(out, key=lambda c: (-c.share, c.category.lower()))
 
 
 # ------------------------------------------------------------- monthly spend

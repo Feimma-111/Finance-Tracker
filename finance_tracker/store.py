@@ -183,7 +183,16 @@ CREATE TABLE transfers (
 CREATE INDEX transfers_by_date ON transfers (occurred_on);
 """
 
-MIGRATIONS: Tuple[str, ...] = (SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6)
+# Version 7: a monthly spending cap per category, in the currency it was set in.
+SCHEMA_V7 = """
+CREATE TABLE category_caps (
+    category_id  INTEGER PRIMARY KEY REFERENCES categories(id) ON DELETE CASCADE,
+    cap_cents    INTEGER NOT NULL CHECK (cap_cents > 0),
+    currency     TEXT NOT NULL DEFAULT 'USD'
+);
+"""
+
+MIGRATIONS: Tuple[str, ...] = (SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7)
 
 # Safety valve: never create more than this many transactions in one catch-up.
 MAX_CATCH_UP = 1000
@@ -255,6 +264,37 @@ class Store:
 
     def set_setting(self, name: str, value: str) -> None:
         self.set_meta(f"setting:{name}", value)
+
+    def caps(self) -> List[Tuple[str, int, str]]:
+        """[(category, cap_cents, currency)] -- monthly spending caps, by name."""
+        rows = self.conn.execute(
+            """
+            SELECT c.name, k.cap_cents, k.currency
+            FROM category_caps k JOIN categories c ON c.id = k.category_id
+            ORDER BY c.name COLLATE NOCASE
+            """
+        )
+        return [(row["name"], row["cap_cents"], row["currency"]) for row in rows]
+
+    def set_cap(self, category: str, cap_cents: Optional[int], currency: str = HOME_CURRENCY) -> None:
+        """Give an existing category a monthly cap, or remove it (None)."""
+        name = self.find_category(category)
+        if name is None:
+            raise ValueError(f"no category called {category!r}")
+        with self.conn:
+            category_id = self._category_id(name)
+            if cap_cents is None:
+                self.conn.execute("DELETE FROM category_caps WHERE category_id = ?", (category_id,))
+            else:
+                if cap_cents <= 0:
+                    raise ValueError("a cap must be more than zero")
+                self.conn.execute(
+                    "INSERT INTO category_caps (category_id, cap_cents, currency) VALUES (?, ?, ?) "
+                    "ON CONFLICT (category_id) DO UPDATE SET cap_cents = excluded.cap_cents, "
+                    "currency = excluded.currency",
+                    (category_id, cap_cents, currency),
+                )
+            self._mark_facts_changed()  # reviews mention caps
 
     def covered_categories(self) -> Tuple[List[str], str]:
         """(category names, note) for expenses someone else pays for, e.g. rent

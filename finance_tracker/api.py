@@ -47,6 +47,8 @@ GET    /api/net-worth                value everything at live prices
 GET    /api/net-worth/history        daily net-worth snapshots
 GET    /api/portfolio?period=        investment gains (since buying, over a period, today) + chart
 POST   /api/ai/holdings              the AI on your investments and the market (not saved)
+GET    /api/caps?month=              monthly spending caps and how much of each is spent
+PUT    /api/caps                     set or remove caps
 GET    /api/transfers                moves between your own accounts
 POST   /api/transfers                record one (converts currencies at that day's rate if needed)
 DELETE /api/transfers/{id}           remove one
@@ -259,6 +261,16 @@ class SettingsIn(BaseModel):
     covered_note: Optional[str] = Field(None, max_length=120)
     display_currency: Optional[str] = Field(None, max_length=3)
     travel_account_id: Optional[int] = Field(None, description="travel mode's account; null turns it off")
+
+
+class CapIn(BaseModel):
+    category: str = Field(max_length=60)
+    amount: Optional[str] = Field(None, description="monthly cap; blank or null removes it")
+
+
+class CapsIn(BaseModel):
+    caps: List[CapIn] = Field(max_length=100)
+    currency: str = Field("USD", max_length=3, description="the caps' currency (the display currency)")
 
 
 class TransferIn(BaseModel):
@@ -1140,6 +1152,55 @@ def create_app(
             "fetched_at": q.fetched_at.isoformat(),
             "stale": q.stale,
         }
+
+    # ---------------------------------------------------- spending caps
+
+    def caps_json(store: Store, month: str) -> Dict[str, Any]:
+        service = price_service(store)
+
+        def rate(currency: str) -> Optional[float]:
+            try:
+                return service.fx_rate(currency)
+            except PriceUnavailable:
+                return None
+
+        share = reports.month_share(month, today().isoformat())
+        spent = dict(store.totals_by_category(Kind.EXPENSE, month=month))
+        native = {name: (cents, currency) for name, cents, currency in store.caps()}
+        return {
+            "month": month,
+            "month_share": share,  # how much of the month has gone (for the pace marker)
+            "caps": [
+                {
+                    "category": c.category,
+                    "cap_cents": c.cap_cents,           # USD
+                    "spent_cents": c.spent_cents,       # USD
+                    "left_cents": c.left_cents,         # negative when over
+                    "share": c.share,
+                    "status": c.status,                 # ok / near / over
+                    "set_cents": native[c.category][0],  # as you set it...
+                    "set_currency": native[c.category][1],  # ...in this currency
+                }
+                for c in reports.cap_statuses(store.caps(), spent, rate, share)
+            ],
+        }
+
+    @app.get("/api/caps")
+    def get_caps(month: Optional[str] = None, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """Monthly spending caps, each with how much of it is spent."""
+        return caps_json(store, _month_or_400(month) or month_of(today()))
+
+    @app.put("/api/caps")
+    def put_caps(body: CapsIn, store: Store = Depends(get_store)) -> Dict[str, Any]:
+        """Set or remove caps (only the categories listed change)."""
+        try:
+            currency = check_currency(body.currency)
+            for cap in body.caps:
+                amount = (cap.amount or "").strip()
+                store.set_cap(cap.category, parse_money(amount) if amount else None, currency)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return caps_json(store, month_of(today()))
 
     # ---------------------------------------------------- transfers
 

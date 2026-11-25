@@ -46,6 +46,7 @@
 
   --positive: #188038;           /* accessible systemGreen */
   --negative: #d93025;           /* accessible systemRed */
+  --warning: #b06000;            /* "close to the cap" */
   --danger: #d93025;
   --accent: #0b57d0;
   --accent-tint: #d3e3fd;
@@ -110,6 +111,7 @@
 
     --positive: #81c995;
     --negative: #f28b82;
+    --warning: #fdd663;
     --danger: #f28b82;
     --accent: #a8c7fa;
     --accent-tint: rgba(168, 199, 250, 0.16);
@@ -153,6 +155,7 @@
 
   --positive: #81c995;
   --negative: #f28b82;
+  --warning: #fdd663;
   --danger: #f28b82;
   --accent: #a8c7fa;
   --accent-tint: rgba(168, 199, 250, 0.16);
@@ -881,3 +884,21 @@ select:focus { box-shadow: inset 0 0 0 2px var(--accent); }
 .topbar { background: var(--page); border-bottom: 1px solid var(--border); }
 .tx-month { margin: 6px 0 -4px; font-size: 14px; font-weight: 500; color: var(--text-secondary); }
 .tx-month:first-child { margin-top: 0; }
+
+/* ==================================================================== category caps
+   Status is said in words and an icon, never by color alone. */
+.cap-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.cap { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; align-items: start; padding: 8px 4px; }
+.cap-main { display: grid; gap: 6px; min-width: 0; }
+.cap-top, .cap-bottom { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 14px; }
+.cap-track { position: relative; height: 10px; border-radius: 5px; background: var(--fill-strong); }
+.cap-fill { position: absolute; inset: 0 auto 0 0; border-radius: 5px; background: var(--positive); min-width: 3px; }
+.cap-near .cap-fill { background: var(--warning); }
+.cap-over .cap-fill { background: var(--negative); }
+.cap-pace { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text-secondary); border-radius: 1px; }
+.cap-status { font-size: 13px; font-weight: 500; color: var(--positive); }
+.cap-near .cap-status { color: var(--warning); }
+.cap-over .cap-status { color: var(--negative); }
+.cap-editor { display: grid; gap: 8px; max-height: 50vh; overflow-y: auto; padding: 2px; }
+.cap-edit-row { display: grid; grid-template-columns: auto minmax(0, 1fr) 140px; gap: 10px; align-items: center; font-size: 14px; }
+.card { scroll-margin-top: 84px; }

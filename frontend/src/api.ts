@@ -225,6 +225,23 @@ export interface HoldingActivity {
   balance: { date: string; amount_cents: number | null } | null; // when the balance was last entered
 }
 
+/** A monthly spending cap on one category. Amounts are USD cents unless noted. */
+export interface Cap {
+  category: string;
+  cap_cents: number;
+  spent_cents: number;
+  left_cents: number; // negative when over
+  share: number; // spent / cap
+  status: "ok" | "near" | "over";
+  set_cents: number; // the cap as you set it...
+  set_currency: string; // ...in this currency
+}
+export interface Caps {
+  month: string;
+  month_share: number; // how much of the month has gone, 0-1
+  caps: Cap[];
+}
+
 /** Money moved between two of your own accounts (not spending or income). */
 export interface TransferItem {
   id: number;
@@ -458,6 +475,9 @@ export const api = {
   portfolio: (period: Period) => request<Portfolio>(`/api/portfolio${query({ period })}`),
   holdingsReview: () => request<HoldingsReview>("/api/ai/holdings", { method: "POST" }),
   fx: (currency: string) => request<{ currency: string; rate: number }>(`/api/fx${query({ currency })}`),
+  caps: (month: string) => request<Caps>(`/api/caps${query({ month })}`),
+  saveCaps: (caps: { category: string; amount: string | null }[], currency: string) =>
+    request<Caps>("/api/caps", json("PUT", { caps, currency })),
   transfers: () => request<TransferItem[]>("/api/transfers"),
   addTransfer: (body: {
     from_account_id: number; to_account_id: number; amount: string; received?: string; occurred_on: string; note?: string;

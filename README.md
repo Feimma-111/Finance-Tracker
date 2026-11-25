@@ -271,6 +271,7 @@ Every endpoint except `/api/auth/...` requires a signed-in session.
 | GET | `/api/quotes/{symbol}` | live price (used to check tickers) |
 | GET | `/api/net-worth` | value everything (cash accounts with their linked transactions), liquid total; records today's snapshot |
 | GET | `/api/portfolio?period=` | investment gains since buying, over 1W–All, and today, plus the chart |
+| GET / PUT | `/api/caps?month=` | spending caps with how much of each is spent / set or remove caps |
 | GET / POST | `/api/transfers` | moves between your own accounts / record one (converting currencies if needed) |
 | DELETE | `/api/transfers/{id}` | remove one |
 | GET | `/api/fx?currency=` | today's exchange rate, in units per US dollar |
@@ -374,6 +375,17 @@ but:
    ```
 4. In the app, open **Settings → AI analyst**, enter `http://100.x.y.z:11434`,
    and choose a model.
+
+### Category caps
+
+Give any category a monthly cap (**Category caps → Set caps** on the Home
+screen). Caps are entered in your display currency, so NT$ works too. Each
+capped category gets a bar showing how much of its cap is spent, with a marker
+for how much of the month has gone. A label says where it stands, in words as
+well as color: **On track**, **Close to the cap** (90% or more), or **Over by
+$X**. For a cap that's close or over, **Why?** ticks just that category and has
+the AI look at it. The AI's fact sheets include the caps ("$260.91 of a
+$200.00 monthly cap, over by $60.91"), and so does the monthly review.
 
 ### Your money: bank accounts and investments
 
@@ -569,8 +581,11 @@ paused. Stopping a rule keeps the transactions it already created.
 - [x] Bank accounts that follow transactions (liquid total); investment gains
       over any period; AI on investments and the market
 - [x] Accounts in more than one currency (NT$), transfers, display currency, travel mode
+- [x] Monthly spending caps per category, with the AI on any that go over
 - [ ] Next: move to an always-on Raspberry Pi ([plan](docs/raspberry-pi.md))
 - [ ] Later: Wake-on-LAN to turn the PC on from the app
 
-Ideas not built yet: budgets per category, separate purchase lots per
-investment, and liabilities (credit cards as their own accounts, loans).
+Ideas not built yet: savings goals, credit cards and loans as their own
+accounts (what you owe), subscription detection, a cash-flow forecast,
+split and shared expenses, tags, rules for imports, and separate purchase lots
+per investment.

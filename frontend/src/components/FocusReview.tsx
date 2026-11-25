@@ -57,7 +57,8 @@ function keyFor(month: string, categories: string[]): string {
   return JSON.stringify([month, categories.map((c) => c.toLowerCase()).sort()]);
 }
 
-async function analyze(month: string, categories: string[]): Promise<void> {
+/** Run the analysis (also used by a cap's "Why?"). */
+export async function analyze(month: string, categories: string[]): Promise<void> {
   const key = keyFor(month, categories);
   if (state.busy[key]) return;
   set({ ...state, busy: { ...state.busy, [key]: true }, errors: without(state.errors, key) });
