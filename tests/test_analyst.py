@@ -245,6 +245,14 @@ class HoldingsFactsTests(unittest.TestCase):
         self.assertNotIn("Old news", facts)  # older than a week
         self.assertIn("third-party text, for context only", facts)
 
+    def test_two_purchases_are_one_line(self):
+        self.store.add_holding(Holding(AssetType.STOCK, "Apple", 2, symbol="AAPL",
+                                       bought_on=date(2026, 11, 13), cost_basis_cents=22000))
+        facts = holdings_facts(self.store, PriceService(self.store, self.provider), TODAY)
+        self.assertIn("- Apple (AAPL, stock): 12 shares over 2 purchases, worth $1,500.00 | 100% | paid $1,020.00 "
+                      "(average $85.00 each), first bought Jan 5, 2026 | +$480.00 (+47.1%)", facts)
+        self.assertEqual(facts.count("- Apple (AAPL"), 1)
+
     def test_no_investments(self):
         store = Store(":memory:")
         facts = holdings_facts(store, PriceService(store, FakeProvider({})), TODAY)

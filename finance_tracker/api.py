@@ -1164,6 +1164,13 @@ def create_app(
                     cost = round(holding.cost_basis_cents * quantity / holding.quantity)
                 store.update_holding(holding_id, quantity=quantity, name=name, symbol=symbol,
                                      bought_on=bought_on, cost_basis_cents=cost, clear=clear)
+                if name is not None or symbol is not None:
+                    # The name and symbol belong to the investment, not one purchase:
+                    # rename its other purchases too, so they stay one row.
+                    key = portfolio.position_key(holding)
+                    for other in store.holdings():
+                        if other.id != holding_id and portfolio.position_key(other) == key:
+                            store.update_holding(other.id, name=name, symbol=symbol)
             else:
                 value = _value(body.value) if body.value is not None else None
                 # A new cash balance is "as of today": later transactions move it from there.
@@ -1485,6 +1492,25 @@ def create_app(
             })
         values = [r.value_cents for r in priced]
         costs = [r.holding.cost_basis_cents for r in priced if r.holding.cost_basis_cents is not None]
+        # Purchases of the same investment, together (one row each on the page).
+        grouped = [
+            {
+                "key": pos.key,
+                "name": pos.name,
+                "asset_type": pos.lots[0].holding.asset_type.value,
+                "symbol": pos.lots[0].holding.symbol,
+                "lot_ids": [lot.holding.id for lot in pos.lots],
+                "quantity": pos.quantity,
+                "value_cents": pos.value_cents,
+                "cost_cents": pos.cost_cents,
+                "avg_price": pos.cost_cents / 100 / pos.quantity if pos.cost_cents is not None and pos.quantity else None,
+                "first_bought": pos.first_bought.isoformat() if pos.first_bought else None,
+                "total": _return_json(pos.combined("total")),
+                "period": _return_json(pos.combined("period")),
+                "today": _return_json(pos.combined("today")),
+            }
+            for pos in portfolio.positions(priced)
+        ]
         return {
             "period": period,
             "start": start.isoformat(),
@@ -1493,7 +1519,8 @@ def create_app(
             "total": _return_json(portfolio.combine([r.total for r in priced], values)),
             "period_change": _return_json(portfolio.combine([r.period for r in priced], values)),
             "today": _return_json(portfolio.combine([r.today for r in priced], values)),
-            "holdings": rows,
+            "holdings": rows,      # each purchase (lot)
+            "positions": grouped,  # each investment, purchases together
             "series": [{"date": d.isoformat(), "value_cents": v} for d, v in portfolio.value_series(items, start, now)],
         }
 

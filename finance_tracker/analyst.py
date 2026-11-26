@@ -41,7 +41,7 @@ from .models import (
     shift_month,
     to_home_cents,
 )
-from .portfolio import Return, account_balances, close_on, combine, holding_returns, period_start
+from .portfolio import Return, account_balances, close_on, combine, holding_returns, period_start, position_key
 from .prices import PriceService, PriceUnavailable
 from .reports import GoalPlan, cap_statuses, group_purchases, month_share, monthly_pay_cents, value_holdings
 from .store import Store
@@ -639,45 +639,61 @@ def holdings_facts(store: Store, service: PriceService, today: date) -> str:
         lines.append(f"Your investments are worth {format_money(invested_total)} in total.")
         highlights_at = len(lines)  # filled in once every investment's numbers are known
         lines.append("")
-        lines.append("Each investment (worth | share of your investments | what you paid | gain since buying | changes):")
-        by_period: Dict[str, List[Optional[Return]]] = {code: [] for code in ("1D", "TOTAL", *(c for _, c in periods))}
-        values: List[int] = []
-        for line in sorted(invested, key=lambda l: -l.value_cents):
+        lines.append("Each investment, all its purchases together "
+                     "(worth | share of your investments | what you paid | gain since buying | changes):")
+        # Returns per purchase (lot), then added up per investment.
+        codes = ("1D", "TOTAL", *(c for _, c in periods))
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        for line in invested:
             h, value = line.holding, line.value_cents
             closes = service.history(h.symbol or "")
+            week = holding_returns(h, value, closes, period_start("1W", today, None), today)
+            lot: Dict[str, Any] = {"holding": h, "value": value, "1D": week.today, "TOTAL": week.total}
+            for _, code in periods:
+                lot[code] = holding_returns(h, value, closes, period_start(code, today, None), today).period
+            groups.setdefault(position_key(h), []).append(lot)
+        by_period: Dict[str, List[Optional[Return]]] = {code: [] for code in codes}
+        values: List[int] = []
+        names: List[str] = []
+        for lots in sorted(groups.values(), key=lambda ls: -sum(l["value"] for l in ls)):
+            h = lots[0]["holding"]
+            lot_values = [l["value"] for l in lots]
+            value = sum(lot_values)
+            combined = {code: combine([l[code] for l in lots], lot_values) for code in codes}
+            for code in codes:
+                by_period[code].append(combined[code])
             values.append(value)
-            first = holding_returns(h, value, closes, period_start("1W", today, None), today)
-            by_period["1D"].append(first.today)
-            by_period["TOTAL"].append(first.total)
-            changes = [f"1 day {_describe(first.today)}"]
-            for label, code in periods:
-                r = holding_returns(h, value, closes, period_start(code, today, None), today).period
-                by_period[code].append(r)
-                changes.append(f"{label} {_describe(r)}")
-            if h.cost_basis_cents is not None:
-                each = h.cost_basis_cents / h.quantity if h.quantity else 0
-                paid = f"paid {format_money(h.cost_basis_cents)} (average {format_money(round(each))} each)"
-                if h.bought_on:
-                    paid += f", first bought {h.bought_on:%b} {h.bought_on.day}, {h.bought_on.year}"
+            names.append(h.name)
+            quantity = sum(l["holding"].quantity for l in lots)
+            costs = [l["holding"].cost_basis_cents for l in lots]
+            if all(c is not None for c in costs):
+                cost = sum(costs)
+                paid = f"paid {format_money(cost)} (average {format_money(round(cost / quantity)) if quantity else '$0.00'} each)"
+                bought = [l["holding"].bought_on for l in lots if l["holding"].bought_on]
+                if bought:
+                    first = min(bought)
+                    paid += f", first bought {first:%b} {first.day}, {first.year}"
             else:
-                paid = "what you paid isn't recorded"
+                paid = "what you paid isn't recorded for every purchase"
+            purchases = f" over {len(lots)} purchases" if len(lots) > 1 else ""
+            changes = [f"1 day {_describe(combined['1D'])}"] + [
+                f"{label} {_describe(combined[code])}" for label, code in periods
+            ]
             lines.append(
-                f"- {h.name} ({h.symbol}, {h.asset_type.value}): {_quantity_text(h.quantity, h.asset_type)}, "
+                f"- {h.name} ({h.symbol}, {h.asset_type.value}): {_quantity_text(quantity, h.asset_type)}{purchases}, "
                 f"worth {format_money(value)} | {value / invested_total * 100:.0f}% | {paid} | "
-                f"{_describe(first.total)} | {', '.join(changes)}"
+                f"{_describe(combined['TOTAL'])} | {', '.join(changes)}"
             )
-        names = [l.holding.name for l in sorted(invested, key=lambda l: -l.value_cents)]
         lines[highlights_at:highlights_at] = ["", "Highlights (worked out by the app):", *_highlights(names, by_period, values)]
         lines.append(
             f"- All investments together: gain since buying {_describe(combine(by_period['TOTAL'], values))}; "
             f"1 day {_describe(combine(by_period['1D'], values))}, "
             + ", ".join(f"{label} {_describe(combine(by_period[code], values))}" for label, code in periods)
         )
-        biggest = max(invested, key=lambda l: l.value_cents)
+        biggest_name, biggest_value = max(zip(names, values), key=lambda pair: pair[1])
         lines.append("")
         lines.append(
-            f"Largest investment: {biggest.holding.name}, {biggest.value_cents / invested_total * 100:.0f}% "
-            f"of your investments."
+            f"Largest investment: {biggest_name}, {biggest_value / invested_total * 100:.0f}% of your investments."
         )
         by_type: Dict[AssetType, int] = {}
         for line in invested:

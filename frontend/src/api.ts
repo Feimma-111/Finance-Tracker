@@ -357,6 +357,22 @@ export interface PortfolioHolding extends Holding {
   today?: Change | null;
   note: string;
 }
+/** One investment with all its purchases together. Amounts are USD cents. */
+export interface Position {
+  key: string; // "stock:AAPL"
+  name: string;
+  asset_type: AssetType;
+  symbol: string | null;
+  lot_ids: number[]; // the purchases (holdings), biggest first
+  quantity: number;
+  value_cents: number;
+  cost_cents: number | null; // null if any purchase's price isn't recorded
+  avg_price: number | null;
+  first_bought: string | null;
+  total: Change | null;
+  period: Change | null;
+  today: Change | null;
+}
 export interface Portfolio {
   period: Period;
   start: string;
@@ -365,7 +381,8 @@ export interface Portfolio {
   total: Change | null;
   period_change: Change | null;
   today: Change | null;
-  holdings: PortfolioHolding[];
+  holdings: PortfolioHolding[]; // each purchase
+  positions: Position[]; // each investment, purchases together
   series: { date: string; value_cents: number }[];
 }
 

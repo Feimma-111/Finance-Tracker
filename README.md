@@ -266,11 +266,11 @@ Every endpoint except `/api/auth/...` requires a signed-in session.
 | GET | `/api/reports/pace?month=&category=` | running total through a month vs. the month before (optionally only some categories) |
 | GET | `/api/reports/purchases?category=&month=` | one category's spending, grouped by purchase |
 | GET / POST | `/api/holdings` | list / add |
-| PATCH / DELETE | `/api/holdings/{id}` | change name, symbol, quantity, value, purchase date, or price paid / remove |
+| PATCH / DELETE | `/api/holdings/{id}` | change name, symbol (for every purchase of that investment), quantity, value, purchase date, or price paid / remove |
 | GET | `/api/holdings/{id}/activity` | an account's transactions and transfers, or an investment's purchase |
 | GET | `/api/quotes/{symbol}` | live price (used to check tickers) |
 | GET | `/api/net-worth` | value everything (cash accounts with their linked transactions), liquid total; records today's snapshot |
-| GET | `/api/portfolio?period=` | investment gains since buying, over 1W–All, and today, plus the chart |
+| GET | `/api/portfolio?period=` | investment gains since buying, over 1W–All, and today, plus the chart; each purchase and each investment (purchases grouped) |
 | GET | `/api/categories/suggest?description=` | the category you've used before for a description |
 | GET / POST | `/api/goals` | savings goals with progress and what each needs per month / add one |
 | PUT / DELETE | `/api/goals/{id}` | change / remove one |
@@ -442,11 +442,12 @@ yourself, it stays.
 ### Your money: bank accounts and investments
 
 **Activity under each holding.** On the Holdings page, everything you own is
-grouped by type with a subtotal each. Click a holding to open a dropdown of
-what moved it, newest first. For a bank account, that's its linked
-transactions and transfers, with a marker where you last entered its balance;
-entries before the marker are grayed because they're already in that number.
-For an investment, it's the purchase you recorded.
+grouped by type with a subtotal each. Click a holding to open a dropdown,
+newest first. For a bank account, that's its linked transactions and
+transfers, with a marker where you last entered its balance; entries before
+the marker are grayed because they're already in that number. Click a
+transaction there to edit it. For an investment, it's each purchase (see
+below).
 
 **Liquid (cash accounts).** Add each bank account as a *Cash* holding with the
 balance your bank shows today. When you add a transaction, choose which account
@@ -461,7 +462,7 @@ bank and the app drift apart, enter the bank's number again and it starts over
 from there.
 
 **Investments.** For stocks, crypto, and gold, add **when you bought it** and
-the **average price you paid**. The Holdings page then shows, like Robinhood:
+the **price you paid**. The Holdings page then shows, like Robinhood:
 
 - the value, and a chart of it over **1W, 1M, 3M, YTD, 1Y**, or **All**
 - the change over that period, **today's** change, and the **gain since you
@@ -469,10 +470,13 @@ the **average price you paid**. The Holdings page then shows, like Robinhood:
 
 Daily closing prices come from Yahoo and are saved, refreshing at most every 12
 hours. If you bought during the period, the gain counts from what you paid.
-Each holding has one purchase date and an average cost, like Robinhood's
-*average cost*. If you bought more later, enter your average price and the
-first date; gains for periods before the later purchase then treat it as held
-all along.
+
+**Buying more.** Each purchase keeps its own date and price. Purchases of the
+same investment (same type and symbol) show as **one row** with the total
+amount, the average price, and the combined gains. Open the row to see each
+purchase with its own gain, and click one to edit or remove it. **Add another
+purchase** in the dropdown records a new one. Renaming a purchase renames the
+investment, so its purchases stay together.
 
 **AI on your investments** (Holdings page). The app works out each
 investment's gains over a day, week, month, 3 months, and a year. It also adds
@@ -635,9 +639,10 @@ paused. Stopping a rule keeps the transactions it already created.
 - [x] Accounts in more than one currency (NT$), transfers, display currency, travel mode
 - [x] Monthly spending caps per category, with the AI on any that go over
 - [x] Savings goals, your pay, and an AI savings check; category suggestions
+- [x] Buying more of an investment: one row per investment, each purchase underneath
 - [ ] Next: move to an always-on Raspberry Pi ([plan](docs/raspberry-pi.md))
 - [ ] Later: Wake-on-LAN to turn the PC on from the app
 
 Ideas not built yet: subscription detection, a cash-flow forecast, split and
-shared expenses, tags, rules for imports, phone notifications, a calendar view
-of spending, and separate purchase lots per investment.
+shared expenses, tags, rules for imports, phone notifications, and a calendar
+view of spending.

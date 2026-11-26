@@ -102,3 +102,20 @@ class PortfolioTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PositionTests(unittest.TestCase):
+    def test_purchases_of_the_same_investment_are_grouped(self):
+        from finance_tracker.portfolio import positions
+        first = holding_returns(stock(id=1, quantity=10, bought_on=date(2026, 1, 5), cost_basis_cents=80000),
+                                125000, CLOSES, date(2026, 11, 16), TODAY)
+        second = holding_returns(stock(id=2, quantity=2, bought_on=date(2026, 11, 13), cost_basis_cents=22000),
+                                 25000, CLOSES, date(2026, 11, 16), TODAY)
+        gold = holding_returns(Holding(AssetType.GOLD, "Gold", 1, symbol="GC=F", id=3), 300000, [], TODAY, TODAY)
+        apple, bullion = positions([first, second, gold])[::-1]  # biggest first: gold, then Apple
+        self.assertEqual((bullion.key, apple.key), ("gold:GC=F", "stock:AAPL"))
+        self.assertEqual((apple.quantity, apple.value_cents, apple.cost_cents), (12, 150000, 102000))
+        self.assertEqual(apple.first_bought, date(2026, 1, 5))
+        self.assertEqual([lot.holding.id for lot in apple.lots], [1, 2])
+        self.assertEqual(apple.combined("total"), Return(48000, 47.1))  # $1,500 - $1,020
+        self.assertIsNone(bullion.cost_cents)

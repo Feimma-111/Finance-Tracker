@@ -11,9 +11,9 @@ For each market-priced holding, from its quantity, what you paid
 - a value-over-time series for the chart, where each holding counts from the
   day you bought it
 
-Simplification: one purchase date and an average cost per holding (like
-Robinhood's "average cost"). If you bought more later, gains over periods
-before the second purchase are computed as if you held it all from the start.
+Each holding is one purchase (a "lot") with its own date and price, so buying
+more later is another holding. ``positions`` groups the purchases of the same
+investment into one row and adds their gains up.
 """
 
 from __future__ import annotations
@@ -152,3 +152,55 @@ def account_balances(cash: Sequence[Holding], changes: Dict[int, int]) -> Dict[i
     """{cash holding id: balance now} = the checked balance plus what linked
     transactions moved it since."""
     return {h.id: (h.manual_value_cents or 0) + changes.get(h.id, 0) for h in cash if h.id is not None}
+
+
+# ---------------------------------------------------------------- positions
+# Buying the same stock twice is two holdings (two "lots"), each with its own
+# date and price. A position is all of them together, shown as one row.
+
+
+def position_key(holding: Holding) -> str:
+    """Same type and symbol = same investment ("stock:AAPL")."""
+    return f"{holding.asset_type.value}:{(holding.symbol or holding.name).upper()}"
+
+
+@dataclass(frozen=True)
+class Position:
+    key: str
+    lots: Sequence[HoldingReturns]  # biggest first
+
+    @property
+    def name(self) -> str:
+        return self.lots[0].holding.name
+
+    @property
+    def quantity(self) -> float:
+        return sum(lot.holding.quantity for lot in self.lots)
+
+    @property
+    def value_cents(self) -> int:
+        return sum(lot.value_cents for lot in self.lots)
+
+    @property
+    def cost_cents(self) -> Optional[int]:
+        """What all the purchases cost, or None if any purchase's price isn't recorded."""
+        costs = [lot.holding.cost_basis_cents for lot in self.lots]
+        return None if any(c is None for c in costs) else sum(costs)  # type: ignore[arg-type]
+
+    @property
+    def first_bought(self) -> Optional[date]:
+        days = [lot.holding.bought_on for lot in self.lots if lot.holding.bought_on]
+        return min(days) if days else None
+
+    def combined(self, which: str) -> Optional[Return]:
+        """The lots' "total", "period" or "today" returns added up."""
+        return combine([getattr(lot, which) for lot in self.lots], [lot.value_cents for lot in self.lots])
+
+
+def positions(lots: Sequence[HoldingReturns]) -> List[Position]:
+    """Group lots by investment, biggest position first."""
+    groups: Dict[str, List[HoldingReturns]] = {}
+    for lot in lots:
+        groups.setdefault(position_key(lot.holding), []).append(lot)
+    out = [Position(key, sorted(group, key=lambda l: -l.value_cents)) for key, group in groups.items()]
+    return sorted(out, key=lambda p: -p.value_cents)

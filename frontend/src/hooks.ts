@@ -6,6 +6,19 @@ export interface AsyncState<T> {
   loading: boolean;
 }
 
+/** True on phone-width screens -- the same breakpoint as the .hide-narrow CSS class. */
+export function useNarrow(): boolean {
+  const query = "(max-width: 560px)";
+  const [narrow, setNarrow] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setNarrow(media.matches);
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  return narrow;
+}
+
 /**
  * Run an async loader and re-run it whenever `deps` change.
  *

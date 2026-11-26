@@ -392,6 +392,23 @@ class AccountsAndPortfolioTests(unittest.TestCase):
         c.get("/api/portfolio", params={"period": "1W"})
         self.assertEqual(self.provider.history_calls, calls)
 
+        # A second purchase of the same stock: one position, two purchases.
+        c.post("/api/holdings", json={"asset_type": "stock", "symbol": "AAPL", "quantity": 2,
+                                      "bought_on": "2026-11-13", "avg_price": "110"})
+        grouped = c.get("/api/portfolio", params={"period": "1M"}).json()
+        self.assertEqual(len(grouped["holdings"]), 2)
+        (position,) = grouped["positions"]
+        self.assertEqual((position["key"], position["quantity"], position["value_cents"], position["cost_cents"]),
+                         ("stock:AAPL", 12, 150000, 102000))
+        self.assertEqual((position["avg_price"], position["first_bought"]), (85.0, "2026-01-05"))
+        self.assertEqual(position["total"], {"change_cents": 48000, "pct": 47.1})
+        # Renaming one purchase renames the investment, so they stay together.
+        c.patch(f"/api/holdings/{position['lot_ids'][1]}", json={"name": "Apple Inc."})
+        names = {h["name"] for h in c.get("/api/holdings").json()}
+        self.assertEqual(names, {"Apple Inc."})
+        self.assertEqual(len(c.get("/api/portfolio").json()["positions"]), 1)
+        c.delete(f"/api/holdings/{position['lot_ids'][1]}")
+
         # Selling half keeps the average price; clearing removes the cost.
         half = c.patch(f"/api/holdings/{apple['id']}", json={"quantity": 5}).json()
         self.assertEqual(half["cost_basis_cents"], 40000)
